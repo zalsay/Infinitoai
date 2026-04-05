@@ -1,26 +1,24 @@
 // content/mail-163.js — Content script for 163 Mail (steps 4, 7)
 // Injected on: mail.163.com
 //
-// Actual 163 Mail DOM structure:
-// <div class="rF0" sign="letter" id="...Dom" aria-label="你的 ChatGPT 代码为 479637 发件人 ： OpenAI ...">
-//   <div class="dP0" sign="start-from">
-//     <span class="nui-user">OpenAI</span>
-//   </div>
-//   <div class="il0">
-//     <span class="da0">你的 ChatGPT 代码为 479637</span>
-//   </div>
-// </div>
+// DOM structure:
+// Mail item: div[sign="letter"] with aria-label="你的 ChatGPT 代码为 479637 发件人 ： OpenAI ..."
+// Sender: .nui-user (e.g., "OpenAI")
+// Subject: span.da0 (e.g., "你的 ChatGPT 代码为 479637")
+// Right-click menu: .nui-menu → .nui-menu-item with text "删除邮件"
 
 const MAIL163_PREFIX = '[MultiPage:mail-163]';
 const isTopFrame = window === window.top;
 
 console.log(MAIL163_PREFIX, 'Content script loaded on', location.href, 'frame:', isTopFrame ? 'top' : 'child');
 
-// Only operate in the top frame — child iframes don't have the inbox
+// Only operate in the top frame
 if (!isTopFrame) {
   console.log(MAIL163_PREFIX, 'Skipping child frame');
-  // Don't report ready or handle messages from child frames
 } else {
+
+// Track codes we've already seen across polls to avoid duplicates
+const seenCodes = new Set();
 
 // ============================================================
 // Message Handler (top frame only)
@@ -39,37 +37,20 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 });
 
 // ============================================================
-// Get all current mail IDs
+// Find mail items
 // ============================================================
+
+function findMailItems() {
+  return document.querySelectorAll('div[sign="letter"]');
+}
 
 function getCurrentMailIds() {
   const ids = new Set();
-  // 163 mail items have sign="letter" and id ending with "Dom"
-  const items = findMailItems();
-  for (const item of items) {
+  findMailItems().forEach(item => {
     const id = item.getAttribute('id') || '';
     if (id) ids.add(id);
-  }
+  });
   return ids;
-}
-
-function findMailItems() {
-  // Try current document first
-  let items = document.querySelectorAll('div[sign="letter"]');
-  if (items.length > 0) return items;
-
-  // Try iframes (163 mail may use iframes)
-  const iframes = document.querySelectorAll('iframe');
-  for (const iframe of iframes) {
-    try {
-      const doc = iframe.contentDocument || iframe.contentWindow?.document;
-      if (doc) {
-        items = doc.querySelectorAll('div[sign="letter"]');
-        if (items.length > 0) return items;
-      }
-    } catch { }
-  }
-  return [];
 }
 
 // ============================================================
@@ -81,17 +62,17 @@ async function handlePollEmail(step, payload) {
 
   log(`Step ${step}: Starting email poll on 163 Mail (max ${maxAttempts} attempts)`);
 
-  // Wait for sidebar to load, then click "收件箱"
-  log(`Step ${step}: Waiting for 163 Mail sidebar to load...`);
+  // Click inbox in sidebar to ensure we're in inbox view
+  log(`Step ${step}: Waiting for sidebar...`);
   try {
     const inboxLink = await waitForElement('.nui-tree-item-text[title="收件箱"]', 5000);
     inboxLink.click();
-    log(`Step ${step}: Clicked inbox in sidebar`);
+    log(`Step ${step}: Clicked inbox`);
   } catch {
-    log(`Step ${step}: Could not find inbox link, trying to proceed anyway...`, 'warn');
+    log(`Step ${step}: Inbox link not found, proceeding...`, 'warn');
   }
 
-  // Wait for mail list — poll every 500ms, max 10s
+  // Wait for mail list to appear
   log(`Step ${step}: Waiting for mail list...`);
   let items = [];
   for (let i = 0; i < 20; i++) {
@@ -101,18 +82,18 @@ async function handlePollEmail(step, payload) {
   }
 
   if (items.length === 0) {
-    log(`Step ${step}: Mail list not found, trying refresh...`, 'warn');
     await refreshInbox();
     await sleep(2000);
     items = findMailItems();
   }
 
   if (items.length === 0) {
-    throw new Error('163 Mail list did not load. Make sure inbox is open and has emails.');
+    throw new Error('163 Mail list did not load. Make sure inbox is open.');
   }
 
-  log(`Step ${step}: Mail list loaded, ${items.length} items found`);
+  log(`Step ${step}: Mail list loaded, ${items.length} items`);
 
+  // Snapshot existing mail IDs
   const existingMailIds = getCurrentMailIds();
   log(`Step ${step}: Snapshotted ${existingMailIds.size} existing emails`);
 
@@ -134,15 +115,12 @@ async function handlePollEmail(step, payload) {
 
       if (!useFallback && existingMailIds.has(id)) continue;
 
-      // Get sender from .nui-user
       const senderEl = item.querySelector('.nui-user');
       const sender = senderEl ? senderEl.textContent.toLowerCase() : '';
 
-      // Get subject from span.da0
       const subjectEl = item.querySelector('span.da0');
       const subject = subjectEl ? subjectEl.textContent : '';
 
-      // Also check aria-label which contains full info
       const ariaLabel = (item.getAttribute('aria-label') || '').toLowerCase();
 
       const senderMatch = senderFilters.some(f => sender.includes(f.toLowerCase()) || ariaLabel.includes(f.toLowerCase()));
@@ -150,10 +128,17 @@ async function handlePollEmail(step, payload) {
 
       if (senderMatch || subjectMatch) {
         const code = extractVerificationCode(subject + ' ' + ariaLabel);
-        if (code) {
+        if (code && !seenCodes.has(code)) {
+          seenCodes.add(code);
           const source = useFallback && existingMailIds.has(id) ? 'fallback' : 'new';
           log(`Step ${step}: Code found: ${code} (${source}, subject: ${subject.slice(0, 40)})`, 'ok');
+
+          // Delete this email via right-click menu
+          await deleteEmail(item, step);
+
           return { ok: true, code, emailTimestamp: Date.now(), mailId: id };
+        } else if (code && seenCodes.has(code)) {
+          log(`Step ${step}: Skipping already-seen code: ${code}`, 'info');
         }
       }
     }
@@ -168,9 +153,43 @@ async function handlePollEmail(step, payload) {
   }
 
   throw new Error(
-    `No matching email found on 163 Mail after ${(maxAttempts * intervalMs / 1000).toFixed(0)}s. ` +
+    `No new matching email found on 163 Mail after ${(maxAttempts * intervalMs / 1000).toFixed(0)}s. ` +
     'Check inbox manually.'
   );
+}
+
+// ============================================================
+// Delete Email via Right-Click Menu
+// ============================================================
+
+async function deleteEmail(item, step) {
+  try {
+    log(`Step ${step}: Deleting email...`);
+
+    // Right-click on the mail item to trigger context menu
+    item.dispatchEvent(new MouseEvent('contextmenu', {
+      bubbles: true, cancelable: true, button: 2,
+      clientX: item.getBoundingClientRect().x + 100,
+      clientY: item.getBoundingClientRect().y + 10,
+    }));
+
+    await sleep(500);
+
+    // Find the context menu and click "删除邮件"
+    const menuItems = document.querySelectorAll('.nui-menu-item .nui-menu-item-text');
+    for (const menuItem of menuItems) {
+      if (menuItem.textContent.trim() === '删除邮件') {
+        menuItem.closest('.nui-menu-item').click();
+        log(`Step ${step}: Email deleted`, 'ok');
+        await sleep(500);
+        return;
+      }
+    }
+
+    log(`Step ${step}: Could not find "删除邮件" in context menu`, 'warn');
+  } catch (err) {
+    log(`Step ${step}: Failed to delete email: ${err.message}`, 'warn');
+  }
 }
 
 // ============================================================
@@ -178,25 +197,23 @@ async function handlePollEmail(step, payload) {
 // ============================================================
 
 async function refreshInbox() {
-  // 163 mail: try the toolbar "刷 新" button first
-  // Actual DOM: <div class="js-component-button nui-btn"><span class="nui-btn-text">刷 新</span></div>
+  // Try toolbar "刷 新" button
   const toolbarBtns = document.querySelectorAll('.nui-btn .nui-btn-text');
   for (const btn of toolbarBtns) {
     if (btn.textContent.replace(/\s/g, '') === '刷新') {
       btn.closest('.nui-btn').click();
-      console.log(MAIL163_PREFIX, 'Clicked toolbar "刷新" button');
+      console.log(MAIL163_PREFIX, 'Clicked "刷新" button');
       await sleep(800);
       return;
     }
   }
 
-  // Fallback: click the left sidebar "收 信" button
-  // Actual DOM: <li class="ra0 nb0"><span class="oz0">收 信</span></li>
+  // Fallback: click sidebar "收 信"
   const shouXinBtns = document.querySelectorAll('.ra0');
   for (const btn of shouXinBtns) {
     if (btn.textContent.replace(/\s/g, '').includes('收信')) {
       btn.click();
-      console.log(MAIL163_PREFIX, 'Clicked sidebar "收信" button');
+      console.log(MAIL163_PREFIX, 'Clicked "收信" button');
       await sleep(800);
       return;
     }
