@@ -29,8 +29,9 @@ const btnClearLog = document.getElementById('btn-clear-log');
 const btnLogScrollBottom = document.getElementById('btn-log-scroll-bottom');
 const inputVpsUrl = document.getElementById('input-vps-url');
 const btnToggleVpsUrl = document.getElementById('btn-toggle-vps-url');
-const displayRunSuccess = document.getElementById('display-run-success');
-const displayRunFailure = document.getElementById('display-run-failure');
+const runSuccessStats = document.getElementById('run-success-stats');
+const runFailureStats = document.getElementById('run-failure-stats');
+const runSuccessDetails = document.getElementById('run-success-details');
 const runFailureDetails = document.getElementById('run-failure-details');
 const rowMailProvider = document.getElementById('row-mail-provider');
 const selectMailProvider = document.getElementById('select-mail-provider');
@@ -73,7 +74,13 @@ const {
 } = SidepanelSettings;
 const { shouldDisableStepButton, shouldEnableStopButton } = ManualStepControls;
 const { isLogNearBottom, shouldShowScrollToBottomButton } = SidepanelLogScroll;
-const { buildRunStatsDetailsHtml, normalizeDisplayedAutoRunStats } = SidepanelRunStats;
+const {
+  buildRunFailureSummaryHtml,
+  buildRunStatsDetailsHtml,
+  buildRunSuccessDetailsHtml,
+  buildRunSuccessSummaryHtml,
+  normalizeDisplayedAutoRunStats,
+} = SidepanelRunStats;
 const { pickTmailorCandidate } = TmailorInput;
 const {
   buildTmailorRejectedDomainMessage,
@@ -303,10 +310,15 @@ function syncPasswordField(state) {
 
 function updateAutoRunStatsDisplay(stats = {}) {
   const normalizedStats = normalizeDisplayedAutoRunStats(stats);
-  const successfulRuns = normalizedStats.successfulRuns;
-  const failedRuns = normalizedStats.failedRuns;
-  displayRunSuccess.textContent = `成功 ${successfulRuns}`;
-  displayRunFailure.textContent = `失败 ${failedRuns}`;
+  if (runSuccessStats) {
+    runSuccessStats.innerHTML = buildRunSuccessSummaryHtml(normalizedStats);
+  }
+  if (runFailureStats) {
+    runFailureStats.innerHTML = buildRunFailureSummaryHtml(normalizedStats);
+  }
+  if (runSuccessDetails) {
+    runSuccessDetails.innerHTML = buildRunSuccessDetailsHtml(normalizedStats);
+  }
   if (runFailureDetails) {
     runFailureDetails.innerHTML = buildRunStatsDetailsHtml(normalizedStats);
   }

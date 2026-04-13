@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const {
   normalizeAutoRunStats,
   recordAutoRunFailure,
+  recordAutoRunSuccess,
   summarizeAutoRunFailureBuckets,
 } = require('../shared/auto-run-failure-stats.js');
 
@@ -59,6 +60,57 @@ test('recordAutoRunFailure increments an existing bucket and keeps only the newe
     'Run 4 failed: Step 4 failed: No matching verification email found on TMailor after 4 attempts.',
     'Run 3 failed: Step 4 failed: No matching verification email found on TMailor after 3 attempts.',
   ]);
+});
+
+test('recordAutoRunSuccess increments success count and accumulates successful duration', () => {
+  const next = recordAutoRunSuccess(
+    {
+      successfulRuns: 2,
+      failedRuns: 1,
+      totalSuccessfulDurationMs: 8000,
+      recentSuccessDurationsMs: [5000, 3000],
+      failureBuckets: [],
+    },
+    {
+      durationMs: 3500,
+    }
+  );
+
+  assert.deepEqual(next, {
+    successfulRuns: 3,
+    failedRuns: 1,
+    totalSuccessfulDurationMs: 11500,
+    recentSuccessDurationsMs: [3500, 5000, 3000],
+    failureBuckets: [],
+  });
+});
+
+test('normalizeAutoRunStats sanitizes total successful duration for legacy and malformed values', () => {
+  assert.deepEqual(
+    normalizeAutoRunStats({
+      successfulRuns: '4',
+      failedRuns: '2',
+      totalSuccessfulDurationMs: '9123',
+      recentSuccessDurationsMs: ['1000', -5, 'oops', 2500],
+      failureBuckets: [],
+    }),
+    {
+      successfulRuns: 4,
+      failedRuns: 2,
+      totalSuccessfulDurationMs: 9123,
+      recentSuccessDurationsMs: [1000, 2500],
+      failureBuckets: [],
+    }
+  );
+
+  assert.equal(
+    normalizeAutoRunStats({ totalSuccessfulDurationMs: -10 }).totalSuccessfulDurationMs,
+    0
+  );
+  assert.deepEqual(
+    normalizeAutoRunStats({ recentSuccessDurationsMs: Array.from({ length: 25 }, (_, index) => index + 1) }).recentSuccessDurationsMs,
+    Array.from({ length: 20 }, (_, index) => index + 1)
+  );
 });
 
 test('summarizeAutoRunFailureBuckets sorts the most frequent recent failure first', () => {

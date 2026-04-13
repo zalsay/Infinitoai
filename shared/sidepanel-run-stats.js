@@ -23,6 +23,65 @@
       .replace(/'/g, '&#39;');
   }
 
+  function formatRunStatsAverageDuration(stats = {}) {
+    const normalizedStats = normalizeAutoRunStats(stats);
+    if (normalizedStats.successfulRuns <= 0 || normalizedStats.totalSuccessfulDurationMs <= 0) {
+      return '--';
+    }
+
+    const averageMs = Math.round(normalizedStats.totalSuccessfulDurationMs / normalizedStats.successfulRuns);
+    const totalSeconds = Math.max(0, Math.round(averageMs / 1000));
+    const hours = Math.floor(totalSeconds / 3600);
+    const minutes = Math.floor((totalSeconds % 3600) / 60);
+    const seconds = totalSeconds % 60;
+    const pad = (value) => String(value).padStart(2, '0');
+
+    if (hours > 0) {
+      return `${pad(hours)}:${pad(minutes)}:${pad(seconds)}`;
+    }
+    return `${pad(minutes)}:${pad(seconds)}`;
+  }
+
+  function buildRunStatsSummaryHtml(stats = {}) {
+    const normalizedStats = normalizeAutoRunStats(stats);
+    return `
+      <span class="run-stat-pill success">成功 ${normalizedStats.successfulRuns} · 均时 ${escapeHtml(formatRunStatsAverageDuration(normalizedStats))}</span>
+      <span class="run-stat-pill failure">错误 ${normalizedStats.failedRuns}</span>
+    `;
+  }
+
+  function buildRunSuccessSummaryHtml(stats = {}) {
+    const normalizedStats = normalizeAutoRunStats(stats);
+    return `<span class="run-stat-pill success">成功 ${normalizedStats.successfulRuns} · 均时 ${escapeHtml(formatRunStatsAverageDuration(normalizedStats))}</span>`;
+  }
+
+  function buildRunFailureSummaryHtml(stats = {}) {
+    const normalizedStats = normalizeAutoRunStats(stats);
+    return `<span class="run-stat-pill failure">错误 ${normalizedStats.failedRuns}</span>`;
+  }
+
+  function buildRunSuccessDetailsHtml(stats = {}) {
+    const normalizedStats = normalizeAutoRunStats(stats);
+    if (!normalizedStats.recentSuccessDurationsMs.length) {
+      return '<div class="run-success-empty">暂无成功记录</div>';
+    }
+
+    return `
+      <div class="run-success-list-label">最近 20 次成功耗时</div>
+      <div class="run-success-list">
+        ${normalizedStats.recentSuccessDurationsMs.map((durationMs, index) => `
+          <div class="run-success-item">
+            <span class="run-success-rank">#${index + 1}</span>
+            <span class="run-success-duration">${escapeHtml(formatRunStatsAverageDuration({
+              successfulRuns: 1,
+              totalSuccessfulDurationMs: durationMs,
+            }))}</span>
+          </div>
+        `).join('')}
+      </div>
+    `;
+  }
+
   function buildRunStatsDetailsHtml(stats = {}) {
     const buckets = summarizeAutoRunFailureBuckets(stats);
     if (!buckets.length) {
@@ -63,7 +122,12 @@
   }
 
   return {
+    buildRunFailureSummaryHtml,
+    buildRunSuccessDetailsHtml,
+    buildRunSuccessSummaryHtml,
+    buildRunStatsSummaryHtml,
     buildRunStatsDetailsHtml,
+    formatRunStatsAverageDuration,
     normalizeDisplayedAutoRunStats,
   };
 });

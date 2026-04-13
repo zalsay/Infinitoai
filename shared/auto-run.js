@@ -22,6 +22,14 @@
     return numeric;
   }
 
+  function sanitizeDurationMs(value) {
+    const numeric = Number.parseInt(String(value ?? '').trim(), 10);
+    if (!Number.isFinite(numeric) || numeric < 0) {
+      return 0;
+    }
+    return numeric;
+  }
+
   function shouldContinueAutoRunAfterError(error) {
     const message = getErrorMessage(error);
     return message !== STOP_ERROR_MESSAGE && message !== AUTO_RUN_HANDOFF_MESSAGE;
@@ -41,6 +49,8 @@
     infiniteMode = false,
     successfulRuns = 0,
     failedRuns = 0,
+    totalSuccessfulDurationMs = 0,
+    recentSuccessDurationsMs = [],
     failureBuckets = [],
     summaryMessage = '',
     summaryToast = '',
@@ -54,6 +64,13 @@
       infiniteMode: Boolean(infiniteMode),
       successfulRuns: sanitizeRunCounter(successfulRuns),
       failedRuns: sanitizeRunCounter(failedRuns),
+      totalSuccessfulDurationMs: sanitizeDurationMs(totalSuccessfulDurationMs),
+      recentSuccessDurationsMs: Array.isArray(recentSuccessDurationsMs)
+        ? recentSuccessDurationsMs
+          .map((value) => sanitizeDurationMs(value))
+          .filter((value) => value > 0)
+          .slice(0, 20)
+        : [],
       failureBuckets: Array.isArray(failureBuckets) ? failureBuckets : [],
       summaryMessage,
       summaryToast,

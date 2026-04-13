@@ -51,11 +51,22 @@
       <div class="data-row data-row-stats">
         <span class="data-label">Stats</span>
         <div class="run-stats-wrap">
-          <div class="run-stats" id="run-stats">
-            <span id="display-run-success" class="run-stat-pill success">成功 0</span>
-            <span id="display-run-failure" class="run-stat-pill failure">失败 0</span>
-          </div>
-          <div id="run-failure-details" class="run-failure-details">暂无失败记录</div>
+          <details class="run-stats-panel run-stats-panel-success">
+            <summary class="run-stats-summary">
+              <div class="run-stats" id="run-success-stats">
+                <span class="run-stat-pill success">成功 0 · 均时 --</span>
+              </div>
+            </summary>
+            <div id="run-success-details" class="run-success-details">暂无成功记录</div>
+          </details>
+          <details class="run-stats-panel run-stats-panel-failure">
+            <summary class="run-stats-summary">
+              <div class="run-stats" id="run-failure-stats">
+                <span class="run-stat-pill failure">错误 0</span>
+              </div>
+            </summary>
+            <div id="run-failure-details" class="run-failure-details">暂无失败记录</div>
+          </details>
         </div>
       </div>
       <div class="data-row data-row-stack">

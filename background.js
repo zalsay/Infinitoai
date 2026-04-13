@@ -21,6 +21,7 @@ const {
 const {
   normalizeAutoRunStats,
   recordAutoRunFailure,
+  recordAutoRunSuccess,
 } = AutoRunFailureStats;
 const { addDuckMailRetryHint } = DuckMailErrors;
 const { isTmailorApiCaptchaError } = TmailorErrors;
@@ -140,6 +141,8 @@ const DEFAULT_STATE = {
   autoRunStats: normalizeAutoRunStats({
     successfulRuns: 0,
     failedRuns: 0,
+    totalSuccessfulDurationMs: 0,
+    recentSuccessDurationsMs: [],
     failureBuckets: [],
   }),
   tmailorDomainState: DEFAULT_TMAILOR_DOMAIN_STATE,
@@ -1317,10 +1320,12 @@ async function setAutoRunStats(successfulRunsOrStats, failedRuns) {
   const nextStats = typeof successfulRunsOrStats === 'object' && successfulRunsOrStats !== null
     ? normalizeAutoRunStats(successfulRunsOrStats)
     : normalizeAutoRunStats({
-      successfulRuns: successfulRunsOrStats,
-      failedRuns,
-      failureBuckets: autoRunStatsState.failureBuckets,
-    });
+        successfulRuns: successfulRunsOrStats,
+        failedRuns,
+        totalSuccessfulDurationMs: autoRunStatsState.totalSuccessfulDurationMs,
+        recentSuccessDurationsMs: autoRunStatsState.recentSuccessDurationsMs,
+        failureBuckets: autoRunStatsState.failureBuckets,
+      });
 
   autoRunSuccessfulRuns = nextStats.successfulRuns;
   autoRunFailedRuns = nextStats.failedRuns;
@@ -1340,6 +1345,8 @@ function sendAutoRunStatus(phase, overrides = {}) {
       infiniteMode: autoRunInfinite,
       successfulRuns: autoRunSuccessfulRuns,
       failedRuns: autoRunFailedRuns,
+      totalSuccessfulDurationMs: autoRunStatsState.totalSuccessfulDurationMs,
+      recentSuccessDurationsMs: autoRunStatsState.recentSuccessDurationsMs,
       failureBuckets: autoRunStatsState.failureBuckets,
       ...overrides,
     }),
@@ -1360,6 +1367,7 @@ async function handOffPausedAutoRunToManual(step) {
       totalRuns: autoRunTotalRuns,
       infiniteMode: autoRunInfinite,
     }),
+    startedAt: autoRunCurrentRunStartedAt,
   };
 
   const waiter = resumeWaiter;
@@ -1399,7 +1407,9 @@ async function runManualFlow(startStep) {
     });
     await addLog('Manual continuation completed through step 9', 'ok');
     if (handedOffPausedAutoRun && inheritedRunContext) {
-      await setAutoRunStats(autoRunSuccessfulRuns + 1, autoRunFailedRuns);
+      await setAutoRunStats(recordAutoRunSuccess(autoRunStatsState, {
+        durationMs: Math.max(0, Date.now() - (inheritedRunContext.startedAt || Date.now())),
+      }));
       sendAutoRunStatus('stopped', {
         currentRun: inheritedRunContext.currentRun,
         totalRuns: inheritedRunContext.totalRuns,
@@ -1757,6 +1767,7 @@ let autoRunStatsState = normalizeAutoRunStats(DEFAULT_STATE.autoRunStats);
 let autoRunLastRotatedMailProvider = null;
 let autoRunTask = null;
 let manualHandoffRunContext = null;
+let autoRunCurrentRunStartedAt = 0;
 
 async function recordVisibleAutoRunFailure(errorMessage, overrides = {}) {
   const failureRecord = buildAutoRunFailureRecord({
@@ -1825,10 +1836,13 @@ async function autoRunLoop(totalRuns, infiniteMode = false, options = {}) {
   autoRunTotalRuns = autoRunInfinite ? Number.POSITIVE_INFINITY : totalRuns;
   autoRunLastRotatedMailProvider = null;
   manualHandoffRunContext = null;
+  autoRunCurrentRunStartedAt = 0;
   if (!preserveStats) {
     await setAutoRunStats({
       successfulRuns: 0,
       failedRuns: 0,
+      totalSuccessfulDurationMs: 0,
+      recentSuccessDurationsMs: [],
       failureBuckets: [],
     });
   }
@@ -1906,6 +1920,8 @@ async function autoRunLoop(totalRuns, infiniteMode = false, options = {}) {
     await sleepWithStop(500);
 
     const runTargetText = autoRunInfinite ? `${run}/∞` : `${run}/${totalRuns}`;
+    const runStartedAt = Date.now();
+    autoRunCurrentRunStartedAt = runStartedAt;
     await addLog(`=== Auto Run ${runTargetText} — Phase 1: Get OAuth link & open signup ===`, 'info');
 
     try {
@@ -1953,7 +1969,9 @@ async function autoRunLoop(totalRuns, infiniteMode = false, options = {}) {
       });
 
       await addLog(`=== Run ${runTargetText} COMPLETE! ===`, 'ok');
-        await setAutoRunStats(autoRunSuccessfulRuns + 1, autoRunFailedRuns);
+      await setAutoRunStats(recordAutoRunSuccess(autoRunStatsState, {
+        durationMs: Math.max(0, Date.now() - runStartedAt),
+      }));
 
     } catch (err) {
       if (isAutoRunHandoffError(err)) {
@@ -1994,6 +2012,7 @@ async function autoRunLoop(totalRuns, infiniteMode = false, options = {}) {
   });
 
   await addLog(summary.message, summary.phase === 'complete' ? 'ok' : 'warn');
+  autoRunCurrentRunStartedAt = 0;
   chrome.runtime.sendMessage({
     type: 'AUTO_RUN_STATUS',
     payload: buildAutoRunStatusPayload({

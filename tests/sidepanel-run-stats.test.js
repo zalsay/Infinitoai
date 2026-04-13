@@ -3,12 +3,45 @@ const assert = require('node:assert/strict');
 
 const {
   buildRunStatsDetailsHtml,
+  buildRunFailureSummaryHtml,
+  buildRunSuccessDetailsHtml,
+  buildRunSuccessSummaryHtml,
+  formatRunStatsAverageDuration,
   normalizeDisplayedAutoRunStats,
 } = require('../shared/sidepanel-run-stats.js');
 
 test('buildRunStatsDetailsHtml renders an empty state when there are no failure buckets', () => {
   const html = buildRunStatsDetailsHtml({ successfulRuns: 3, failedRuns: 0, failureBuckets: [] });
   assert.match(html, /暂无失败记录/);
+});
+
+test('buildRunSuccessSummaryHtml renders success count with average duration', () => {
+  const html = buildRunSuccessSummaryHtml({
+    successfulRuns: 3,
+    totalSuccessfulDurationMs: 93000,
+  });
+
+  assert.match(html, /成功 3/);
+  assert.match(html, /均时 00:31/);
+});
+
+test('buildRunFailureSummaryHtml renders total error count', () => {
+  const html = buildRunFailureSummaryHtml({
+    failedRuns: 2,
+  });
+
+  assert.match(html, /错误 2/);
+});
+
+test('buildRunSuccessDetailsHtml renders recent successful durations in descending recency order', () => {
+  const html = buildRunSuccessDetailsHtml({
+    recentSuccessDurationsMs: [61000, 48000, 3050],
+  });
+
+  assert.match(html, /最近 20 次成功耗时/);
+  assert.match(html, /01:01/);
+  assert.match(html, /00:48/);
+  assert.match(html, /00:03/);
 });
 
 test('buildRunStatsDetailsHtml renders grouped failure stats with recent logs', () => {
@@ -80,6 +113,8 @@ test('normalizeDisplayedAutoRunStats keeps grouped failure buckets from auto-run
   const stats = normalizeDisplayedAutoRunStats({
     successfulRuns: '2',
     failedRuns: '1',
+    totalSuccessfulDurationMs: '62000',
+    recentSuccessDurationsMs: ['31000', '30000'],
     failureBuckets: [
       {
         key: 'step-4::mail',
@@ -96,6 +131,8 @@ test('normalizeDisplayedAutoRunStats keeps grouped failure buckets from auto-run
   assert.deepEqual(stats, {
     successfulRuns: 2,
     failedRuns: 1,
+    totalSuccessfulDurationMs: 62000,
+    recentSuccessDurationsMs: [31000, 30000],
     failureBuckets: [
       {
         key: 'step-4::mail',
@@ -108,4 +145,13 @@ test('normalizeDisplayedAutoRunStats keeps grouped failure buckets from auto-run
       },
     ],
   });
+});
+
+test('formatRunStatsAverageDuration returns a placeholder when there is no successful run', () => {
+  assert.equal(formatRunStatsAverageDuration({ successfulRuns: 0, totalSuccessfulDurationMs: 9999 }), '--');
+});
+
+test('buildRunSuccessDetailsHtml renders an empty state when there are no successful runs yet', () => {
+  const html = buildRunSuccessDetailsHtml({ recentSuccessDurationsMs: [] });
+  assert.match(html, /暂无成功记录/);
 });
