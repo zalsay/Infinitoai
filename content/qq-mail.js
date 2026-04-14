@@ -9,12 +9,12 @@
 
 (function() {
 if (window.__MULTIPAGE_QQ_MAIL_LOADED) {
-  console.log('[Infinito.AI:qq-mail] Content script already loaded on', location.href);
+  console.log('[Infinitoai:qq-mail] Content script already loaded on', location.href);
   return;
 }
 window.__MULTIPAGE_QQ_MAIL_LOADED = true;
 
-const QQ_MAIL_PREFIX = '[Infinito.AI:qq-mail]';
+const QQ_MAIL_PREFIX = '[Infinitoai:qq-mail]';
 const isTopFrame = window === window.top;
 const { getStepMailMatchProfile, matchesSubjectPatterns } = MailMatching;
 const { isMailFresh, parseMailTimestampCandidates } = MailFreshness;

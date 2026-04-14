@@ -25,12 +25,12 @@
 
 (function() {
 if (window.__MULTIPAGE_VPS_PANEL_LOADED) {
-  console.log('[Infinito.AI:vps-panel] Content script already loaded on', location.href);
+  console.log('[Infinitoai:vps-panel] Content script already loaded on', location.href);
   return;
 }
 window.__MULTIPAGE_VPS_PANEL_LOADED = true;
 
-console.log('[Infinito.AI:vps-panel] Content script loaded on', location.href);
+console.log('[Infinitoai:vps-panel] Content script loaded on', location.href);
 const { isVpsAuthorizationNotPendingText } = FlowRecovery;
 
 // Listen for commands from Background
