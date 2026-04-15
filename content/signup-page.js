@@ -73,6 +73,22 @@ async function handleCommand(message) {
 // Step 2: Click Register
 // ============================================================
 
+const CREDENTIAL_INPUT_SELECTORS = [
+  'input#login-email',
+  'input[type="email"]',
+  'input[name="email"]',
+  'input[name="username"]',
+  'input[autocomplete="username"]',
+  'input[autocomplete*="username"]',
+  'input[inputmode="email"]',
+  'input[id*="email"]',
+  'input[placeholder*="email"]',
+  'input[placeholder*="Email"]',
+  'input[type="password"]',
+];
+
+const CREDENTIAL_INPUT_SELECTOR = CREDENTIAL_INPUT_SELECTORS.join(', ');
+
 async function step2_clickRegister() {
   log('Step 2: Looking for Register/Sign up button...');
   throwIfUnsupportedCountryRegionTerritoryBlocked(2);
@@ -95,7 +111,7 @@ async function step2_clickRegister() {
 
     if (loginEntryButton) {
       await humanPause(450, 1200);
-      reportComplete(2);
+      await reportStepCompleteBeforePotentialNavigation(2);
       simulateClick(loginEntryButton);
       log('Step 2: create-account opened a session-ended landing page, clicked the primary continue/login button.', 'warn');
       return;
@@ -122,9 +138,20 @@ async function step2_clickRegister() {
   }
 
   await humanPause(450, 1200);
-  reportComplete(2);
+  await reportStepCompleteBeforePotentialNavigation(2);
   simulateClick(registerBtn);
   log('Step 2: Clicked Register button');
+}
+
+async function reportStepCompleteBeforePotentialNavigation(step, data) {
+  try {
+    await Promise.race([
+      Promise.resolve(reportComplete(step, data)).catch(() => null),
+      new Promise((resolve) => setTimeout(resolve, 150)),
+    ]);
+  } catch {
+    reportComplete(step, data);
+  }
 }
 
 function isPlatformLoginEntryPage() {
@@ -489,7 +516,7 @@ async function step3_fillEmailPassword(payload) {
   let emailInput = null;
   try {
     emailInput = await waitForElement(
-      'input[type="email"], input[name="email"], input[name="username"], input[id*="email"], input[placeholder*="email"], input[placeholder*="Email"]',
+      CREDENTIAL_INPUT_SELECTOR,
       10000
     );
   } catch {
@@ -735,18 +762,7 @@ function getAuthPageState() {
 }
 
 function hasVisibleCredentialInput() {
-  const selectors = [
-    'input#login-email',
-    'input[type="email"]',
-    'input[name="email"]',
-    'input[name="username"]',
-    'input[id*="email"]',
-    'input[placeholder*="email"]',
-    'input[placeholder*="Email"]',
-    'input[type="password"]',
-  ];
-
-  return selectors.some((selector) => Array.from(document.querySelectorAll(selector)).some(isElementVisible));
+  return CREDENTIAL_INPUT_SELECTORS.some((selector) => Array.from(document.querySelectorAll(selector)).some(isElementVisible));
 }
 
 function hasVisibleVerificationInput() {

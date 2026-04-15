@@ -124,8 +124,9 @@ function createContext({
     reportComplete(step, payload) {
       completions.push({ step, payload });
       if (typeof reportCompleteImpl === 'function') {
-        reportCompleteImpl(step, payload);
+        return reportCompleteImpl(step, payload);
       }
+      return undefined;
     },
     reportError(step, message) {
       errors.push({ step, message });
@@ -393,6 +394,110 @@ test('step 2 treats the dedicated #login-email field as a direct-entry login for
   });
 
   assert.equal(response?.ok, true);
+  assert.deepEqual(context.__errors, []);
+  assert.deepEqual(context.__completions, [
+    {
+      step: 2,
+      payload: undefined,
+    },
+  ]);
+});
+
+test('step 2 treats autocomplete=username inputs on auth log-in pages as a direct-entry login form', async () => {
+  const emailInput = {
+    getBoundingClientRect() {
+      return { width: 200, height: 44 };
+    },
+  };
+
+  const context = createContext({
+    href: 'https://auth.openai.com/log-in',
+    bodyText: '欢迎回来',
+    querySelectorAllImpl(selector) {
+      if (selector === 'input[autocomplete="username"]') {
+        return [emailInput];
+      }
+      return [];
+    },
+  });
+  loadSignupPage(context);
+
+  const listener = context.__listeners[0];
+  assert.ok(listener, 'expected signup-page to register a runtime listener');
+
+  const response = await new Promise((resolve, reject) => {
+    const keepAlive = listener(
+      { type: 'EXECUTE_STEP', step: 2, payload: {} },
+      {},
+      (result) => resolve(result)
+    );
+    assert.equal(keepAlive, true);
+    setTimeout(() => reject(new Error('timeout waiting for response')), 2000);
+  });
+
+  assert.equal(response?.ok, true);
+  assert.deepEqual(context.__errors, []);
+  assert.deepEqual(context.__completions, [
+    {
+      step: 2,
+      payload: undefined,
+    },
+  ]);
+});
+
+test('step 2 waits for the completion signal before clicking a register link that navigates away', async () => {
+  const registerButton = {
+    textContent: '注册',
+    getBoundingClientRect() {
+      return { width: 160, height: 44 };
+    },
+  };
+
+  let completionAcked = false;
+  let clickedBeforeAck = false;
+
+  const context = createContext({
+    href: 'https://auth.openai.com/log-in',
+    bodyText: '欢迎回来 还没有帐户？请注册',
+    waitForElementByTextImpl(_selector, pattern) {
+      if (/sign\s*up|register|create\s*account|注册/i.test(String(pattern))) {
+        return Promise.resolve(registerButton);
+      }
+      return Promise.reject(new Error('missing'));
+    },
+    reportCompleteImpl() {
+      return new Promise((resolve) => {
+        setTimeout(() => {
+          completionAcked = true;
+          resolve();
+        }, 10);
+      });
+    },
+  });
+  context.simulateClick = (target) => {
+    assert.equal(target, registerButton);
+    clickedBeforeAck = !completionAcked;
+    context.location.href = 'https://auth.openai.com/u/signup/identifier';
+  };
+
+  loadSignupPage(context);
+
+  const listener = context.__listeners[0];
+  assert.ok(listener, 'expected signup-page to register a runtime listener');
+
+  const response = await new Promise((resolve, reject) => {
+    const keepAlive = listener(
+      { type: 'EXECUTE_STEP', step: 2, payload: {} },
+      {},
+      (result) => resolve(result)
+    );
+    assert.equal(keepAlive, true);
+    setTimeout(() => reject(new Error('timeout waiting for response')), 3000);
+  });
+
+  assert.equal(response?.ok, true);
+  assert.equal(clickedBeforeAck, false);
+  assert.equal(completionAcked, true);
   assert.deepEqual(context.__errors, []);
   assert.deepEqual(context.__completions, [
     {
