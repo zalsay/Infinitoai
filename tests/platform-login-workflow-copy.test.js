@@ -67,6 +67,27 @@ test('step 2 has an auth-page-ready fallback when the completion signal is lost 
   );
 });
 
+test('step 3 keeps waiting for completion when the signup auth page enters bfcache during navigation', () => {
+  const backgroundSource = readProjectFile('background.js');
+
+  assert.match(
+    backgroundSource,
+    /async function executeStep3\(state\) \{[\s\S]*try \{[\s\S]*await sendToContentScript\('signup-page', \{[\s\S]*step:\s*3[\s\S]*\}\);[\s\S]*\} catch \(err\) \{[\s\S]*isMessageChannelClosedError\([\s\S]*isReceivingEndMissingError\([\s\S]*waitForStep3CompletionSignalOrRecoveredAuthState\(\);[\s\S]*throw err;[\s\S]*\}[\s\S]*\}/i
+  );
+  assert.match(
+    backgroundSource,
+    /async function waitForStep3CompletionSignalOrRecoveredAuthState\(\) \{/i
+  );
+  assert.match(
+    backgroundSource,
+    /hasVisibleVerificationInput[\s\S]*const payload = \{ recoveredAfterNavigation:\s*true \};[\s\S]*notifyStepComplete\(3,\s*payload\)/i
+  );
+  assert.match(
+    backgroundSource,
+    /const payload = \{[\s\S]*recoveredAfterNavigation:\s*true,[\s\S]*existingAccountLogin:\s*true[\s\S]*\};[\s\S]*Existing-account login password page is already visible after the navigation interrupt[\s\S]*notifyStepComplete\(3,\s*payload\)/i
+  );
+});
+
 test('step 8 heartbeats retry the consent-page continue click when the auth page stalls on consent', () => {
   const backgroundSource = readProjectFile('background.js');
 

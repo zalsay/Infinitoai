@@ -3107,12 +3107,74 @@ async function executeStep3(state) {
   }
 
   await addLog(`Step 3: Filling email ${email}, clicking Continue, and requesting a one-time verification code...`);
-  await sendToContentScript('signup-page', {
-    type: 'EXECUTE_STEP',
-    step: 3,
-    source: 'background',
-    payload: { email, password },
-  });
+  try {
+    await sendToContentScript('signup-page', {
+      type: 'EXECUTE_STEP',
+      step: 3,
+      source: 'background',
+      payload: { email, password },
+    });
+  } catch (err) {
+    const errorMessage = err?.message || String(err || '');
+    if (isMessageChannelClosedError(errorMessage) || isReceivingEndMissingError(errorMessage)) {
+      await addLog(
+        'Step 3: Signup page navigated before the step-3 response returned. Continuing to wait for completion signal...',
+        'warn'
+      );
+      await waitForStep3CompletionSignalOrRecoveredAuthState();
+      return;
+    }
+    throw err;
+  }
+}
+
+function isExistingAccountLoginPasswordPageUrl(url = '') {
+  return /(?:auth|accounts)\.openai\.com\/log-?in\/password/i.test(String(url || ''));
+}
+
+async function waitForStep3CompletionSignalOrRecoveredAuthState() {
+  const timeoutMs = 15000;
+  const start = Date.now();
+
+  while (Date.now() - start < timeoutMs) {
+    const currentState = await getState();
+    const currentStepStatus = currentState?.stepStatuses?.[3];
+
+    if (currentStepStatus === 'completed' || currentStepStatus === 'failed' || currentStepStatus === 'stopped') {
+      return;
+    }
+
+    const pageState = await getSignupAuthPageState();
+
+    if (pageState?.hasVisibleVerificationInput || pageState?.hasVisibleProfileFormInput) {
+      const payload = { recoveredAfterNavigation: true };
+      await addLog(
+        'Step 3: Auth page is already on verification/profile after the navigation interrupt. Completing the step from the background fallback.',
+        'warn'
+      );
+      await setStepStatus(3, 'completed');
+      await handleStepData(3, payload);
+      notifyStepComplete(3, payload);
+      return;
+    }
+
+    if (pageState?.hasVisibleCredentialInput && isExistingAccountLoginPasswordPageUrl(pageState?.url)) {
+      const payload = {
+        recoveredAfterNavigation: true,
+        existingAccountLogin: true,
+      };
+      await addLog(
+        'Step 3: Existing-account login password page is already visible after the navigation interrupt. Completing the step from the background fallback and keeping the current email/password for login.',
+        'warn'
+      );
+      await setStepStatus(3, 'completed');
+      await handleStepData(3, payload);
+      notifyStepComplete(3, payload);
+      return;
+    }
+
+    await sleepWithStop(250);
+  }
 }
 
 // ============================================================
