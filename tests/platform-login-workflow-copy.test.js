@@ -83,3 +83,29 @@ test('step 8 heartbeats retry the consent-page continue click when the auth page
     /Consent page is still visible during heartbeat[\s\S]*retrying the "继续" click/i
   );
 });
+
+test('step 4 and step 5 skip signup-only work when step 3 already identified an existing account login flow', () => {
+  const backgroundSource = readProjectFile('background.js');
+
+  assert.match(
+    backgroundSource,
+    /case 3:[\s\S]*existingAccountLogin/i
+  );
+  assert.match(
+    backgroundSource,
+    /async function executeStep4\(state\) \{[\s\S]*if \(state\.existingAccountLogin\)[\s\S]*Skipping inbox polling[\s\S]*notifyStepComplete\(4,\s*\{[\s\S]*skippedExistingAccountLogin:\s*true/i
+  );
+  assert.match(
+    backgroundSource,
+    /async function executeStep5\(state\) \{[\s\S]*if \(state\.existingAccountLogin\)[\s\S]*Skipping profile completion[\s\S]*notifyStepComplete\(5,\s*\{[\s\S]*skippedExistingAccountLogin:\s*true/i
+  );
+});
+
+test('infinite auto run keeps per-run reset and log-round setup inside the retryable run catch', () => {
+  const backgroundSource = readProjectFile('background.js');
+
+  assert.match(
+    backgroundSource,
+    /const runTargetText = autoRunInfinite \? `\$\{run\}\/∞` : `\$\{run\}\/\$\{totalRuns\}`;\r?\n\r?\n\s*try \{\r?\n\s*\/\/ Reset everything at the start of each run[\s\S]*await resetState\(\{ preserveLogHistory: true \}\);[\s\S]*await startNewLogRound\(`Run \$\{runTargetText\}`\);[\s\S]*await executeStepAndWait\(2,\s*2000\);/i
+  );
+});

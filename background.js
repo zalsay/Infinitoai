@@ -246,6 +246,7 @@ const DEFAULT_STATE = {
   lastEmailTimestamp: null,
   lastSignupVerificationCode: '',
   localhostUrl: null,
+  existingAccountLogin: false,
   flowStartTime: null,
   tabRegistry: {},
   ...buildInitialLogState(),
@@ -1732,6 +1733,7 @@ async function handleStepData(step, payload) {
       break;
     case 3:
       if (payload.email) await setEmailState(payload.email);
+      await setState({ existingAccountLogin: Boolean(payload.existingAccountLogin) });
       break;
     case 4:
       if (payload.emailTimestamp) await setState({ lastEmailTimestamp: payload.emailTimestamp });
@@ -2695,86 +2697,85 @@ async function autoRunLoop(totalRuns, infiniteMode = false, options = {}) {
     autoRunCurrentRun = run;
     const runTargetText = autoRunInfinite ? `${run}/∞` : `${run}/${totalRuns}`;
 
-    // Reset everything at the start of each run (keep VPS/mail settings)
-    let prevState = await getState();
-    let emailSource = getCurrentEmailSource(prevState);
-    let shouldRotateMailProvider = emailSource === '33mail' && getCurrentAutoRotateMailProvider(prevState);
-
-    while (shouldRotateMailProvider) {
-      const nextAvailableAt = getNextMailProviderAvailabilityTimestamp({
-        mailDomainSettings: prevState.mailDomainSettings,
-        usageState: prevState.mailProviderUsage,
-      });
-      if (!Number.isFinite(nextAvailableAt)) {
-        break;
-      }
-
-      const waitMs = Math.max(0, nextAvailableAt - Date.now());
-      if (waitMs <= 0) {
-        break;
-      }
-
-      await addLog(
-        `Auto run ${run}: all 33mail groups reached the 30-minute limit. Waiting ${formatWaitDuration(waitMs)} before retrying...`,
-        'warn'
-      );
-      sendAutoRunStatus('waiting_rotation', {
-        currentRun: run,
-        waitUntilTimestamp: nextAvailableAt,
-        waitReason: '33mail_limit_window',
-      });
-      suspendAutoRunWatchdog();
-      try {
-        await sleepWithStop(waitMs);
-      } finally {
-        resumeAutoRunWatchdog({ resetActivity: true });
-      }
-
-      prevState = await getState();
-      emailSource = getCurrentEmailSource(prevState);
-      shouldRotateMailProvider = emailSource === '33mail' && getCurrentAutoRotateMailProvider(prevState);
-    }
-
-    let activeMailProvider = prevState.mailProvider;
-
-    if (shouldRotateMailProvider) {
-      activeMailProvider = chooseMailProviderForAutoRun({
-        autoRotateMailProvider: true,
-        currentProvider: prevState.mailProvider,
-        lastProvider: autoRunLastRotatedMailProvider,
-        mailDomainSettings: prevState.mailDomainSettings,
-        usageState: prevState.mailProviderUsage,
-      });
-      autoRunLastRotatedMailProvider = activeMailProvider;
-      await setMailProviderState(activeMailProvider);
-      await addLog(`Auto run ${run}: switched 33mail group to ${activeMailProvider.toUpperCase()}`, 'info');
-    }
-
-    const keepSettings = {
-      vpsUrl: prevState.vpsUrl,
-      mailProvider: activeMailProvider,
-      inbucketHost: prevState.inbucketHost,
-      inbucketMailbox: prevState.inbucketMailbox,
-      autoRunCount: sanitizeAutoRunCount(prevState.autoRunCount),
-      autoRunInfinite: sanitizeInfiniteAutoRun(prevState.autoRunInfinite),
-      autoRunStats: prevState.autoRunStats || { successfulRuns: autoRunSuccessfulRuns, failedRuns: autoRunFailedRuns },
-      mailProviderUsage: pruneMailProviderUsage(prevState.mailProviderUsage),
-      autoRunning: true,
-    };
-    await resetState({ preserveLogHistory: true });
-    await setState(keepSettings);
-    await startNewLogRound(`Run ${runTargetText}`);
-    // Tell side panel to reset all UI
-    chrome.runtime.sendMessage({ type: 'AUTO_RUN_RESET' }).catch(() => {});
-    await sleepWithStop(500);
-
-    const runStartedAt = Date.now();
-    autoRunCurrentRunStartedAt = runStartedAt;
-    resetAutoRunCurrentSuccessMode();
-      await addLog(`=== Auto Run ${runTargetText} — Phase 1: Open platform login page ===`, 'info');
-
     try {
+      // Reset everything at the start of each run (keep VPS/mail settings)
+      let prevState = await getState();
+      let emailSource = getCurrentEmailSource(prevState);
+      let shouldRotateMailProvider = emailSource === '33mail' && getCurrentAutoRotateMailProvider(prevState);
+
+      while (shouldRotateMailProvider) {
+        const nextAvailableAt = getNextMailProviderAvailabilityTimestamp({
+          mailDomainSettings: prevState.mailDomainSettings,
+          usageState: prevState.mailProviderUsage,
+        });
+        if (!Number.isFinite(nextAvailableAt)) {
+          break;
+        }
+
+        const waitMs = Math.max(0, nextAvailableAt - Date.now());
+        if (waitMs <= 0) {
+          break;
+        }
+
+        await addLog(
+          `Auto run ${run}: all 33mail groups reached the 30-minute limit. Waiting ${formatWaitDuration(waitMs)} before retrying...`,
+          'warn'
+        );
+        sendAutoRunStatus('waiting_rotation', {
+          currentRun: run,
+          waitUntilTimestamp: nextAvailableAt,
+          waitReason: '33mail_limit_window',
+        });
+        suspendAutoRunWatchdog();
+        try {
+          await sleepWithStop(waitMs);
+        } finally {
+          resumeAutoRunWatchdog({ resetActivity: true });
+        }
+
+        prevState = await getState();
+        emailSource = getCurrentEmailSource(prevState);
+        shouldRotateMailProvider = emailSource === '33mail' && getCurrentAutoRotateMailProvider(prevState);
+      }
+
+      let activeMailProvider = prevState.mailProvider;
+
+      if (shouldRotateMailProvider) {
+        activeMailProvider = chooseMailProviderForAutoRun({
+          autoRotateMailProvider: true,
+          currentProvider: prevState.mailProvider,
+          lastProvider: autoRunLastRotatedMailProvider,
+          mailDomainSettings: prevState.mailDomainSettings,
+          usageState: prevState.mailProviderUsage,
+        });
+        autoRunLastRotatedMailProvider = activeMailProvider;
+        await setMailProviderState(activeMailProvider);
+        await addLog(`Auto run ${run}: switched 33mail group to ${activeMailProvider.toUpperCase()}`, 'info');
+      }
+
+      const keepSettings = {
+        vpsUrl: prevState.vpsUrl,
+        mailProvider: activeMailProvider,
+        inbucketHost: prevState.inbucketHost,
+        inbucketMailbox: prevState.inbucketMailbox,
+        autoRunCount: sanitizeAutoRunCount(prevState.autoRunCount),
+        autoRunInfinite: sanitizeInfiniteAutoRun(prevState.autoRunInfinite),
+        autoRunStats: prevState.autoRunStats || { successfulRuns: autoRunSuccessfulRuns, failedRuns: autoRunFailedRuns },
+        mailProviderUsage: pruneMailProviderUsage(prevState.mailProviderUsage),
+        autoRunning: true,
+      };
+      await resetState({ preserveLogHistory: true });
+      await setState(keepSettings);
+      await startNewLogRound(`Run ${runTargetText}`);
+      // Tell side panel to reset all UI
+      chrome.runtime.sendMessage({ type: 'AUTO_RUN_RESET' }).catch(() => {});
+      await sleepWithStop(500);
+
+      const runStartedAt = Date.now();
+      autoRunCurrentRunStartedAt = runStartedAt;
+      resetAutoRunCurrentSuccessMode();
       throwIfStopped();
+      await addLog(`=== Auto Run ${runTargetText} — Phase 1: Open platform login page ===`, 'info');
       sendAutoRunStatus('running', { currentRun: run });
 
       await executeStepAndWait(2, 2000);
@@ -3550,6 +3551,16 @@ async function executeVerificationMailStep(step, state, options) {
 }
 
 async function executeStep4(state) {
+  if (state.existingAccountLogin) {
+    await addLog(
+      'Step 4: Signup verification is not needed because step 3 already identified an existing-account login flow. Skipping inbox polling and keeping the current email/password for step 6...',
+      'warn'
+    );
+    await setStepStatus(4, 'completed');
+    notifyStepComplete(4, { skippedExistingAccountLogin: true });
+    return;
+  }
+
   const effectiveState = await ensureSignupPageReadyForVerification(state, 4);
   await executeVerificationMailStep(4, effectiveState, {
     filterAfterTimestamp: effectiveState.flowStartTime || 0,
@@ -3564,6 +3575,16 @@ async function executeStep4(state) {
 // ============================================================
 
 async function executeStep5(state) {
+  if (state.existingAccountLogin) {
+    await addLog(
+      'Step 5: Skipping profile completion because step 3 already identified an existing-account login flow.',
+      'warn'
+    );
+    await setStepStatus(5, 'completed');
+    notifyStepComplete(5, { skippedExistingAccountLogin: true });
+    return;
+  }
+
   const { firstName, lastName } = generateRandomName();
   const { year, month, day } = generateRandomBirthday();
 
