@@ -90,6 +90,42 @@ test('reportError emits step error without a duplicate LOG message', () => {
   );
 });
 
+test('reportComplete returns the runtime delivery promise for navigation-sensitive steps', async () => {
+  const context = loadUtilsContext();
+  context.__sentMessages.length = 0;
+
+  let resolveDelivery;
+  const deliveryPromise = new Promise((resolve) => {
+    resolveDelivery = resolve;
+  });
+
+  context.chrome.runtime.sendMessage = (message) => {
+    context.__sentMessages.push(message);
+    return deliveryPromise;
+  };
+
+  const reportPromise = context.reportComplete(2, { recovered: false });
+
+  assert.equal(reportPromise, deliveryPromise);
+  assert.deepEqual(
+    context.__sentMessages.map((message) => message.type),
+    ['LOG', 'STEP_COMPLETE']
+  );
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(context.__sentMessages.at(-1))),
+    {
+      type: 'STEP_COMPLETE',
+      source: 'signup-page',
+      step: 2,
+      payload: { recovered: false },
+      error: null,
+    }
+  );
+
+  resolveDelivery({ ok: true });
+  await reportPromise;
+});
+
 test('simulateClick prefers the element native click handler when available', () => {
   const context = loadUtilsContext();
   let nativeClickCalls = 0;

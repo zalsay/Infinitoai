@@ -269,7 +269,7 @@ function reportReady() {
 function reportComplete(step, data = {}) {
   console.log(LOG_PREFIX, `Step ${step} completed`, data);
   log(`Step ${step} completed successfully`, 'ok');
-  chrome.runtime.sendMessage({
+  return chrome.runtime.sendMessage({
     type: 'STEP_COMPLETE',
     source: SCRIPT_SOURCE,
     step,
