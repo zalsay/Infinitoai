@@ -173,10 +173,26 @@ function createContext({
 }
 
 function loadSignupPage(context) {
-  const scriptPath = path.join(__dirname, '..', 'content', 'signup-page.js');
-  const code = fs.readFileSync(scriptPath, 'utf8');
+  loadSignupPageBundle(context);
+}
+
+function loadSignupPageBundle(context) {
+  const scriptPaths = [
+    path.join(__dirname, '..', 'content', 'signup-page.js'),
+    path.join(__dirname, '..', 'content', 'openai-auth-step3-flow.js'),
+    path.join(__dirname, '..', 'content', 'openai-auth-step6-flow.js'),
+    path.join(__dirname, '..', 'content', 'openai-auth-step2-handler.js'),
+    path.join(__dirname, '..', 'content', 'openai-auth-step3-handler.js'),
+    path.join(__dirname, '..', 'content', 'openai-auth-step5-handler.js'),
+    path.join(__dirname, '..', 'content', 'openai-auth-step6-handler.js'),
+    path.join(__dirname, '..', 'content', 'openai-auth-step8-handler.js'),
+    path.join(__dirname, '..', 'content', 'openai-auth-actions-handler.js'),
+  ];
   vm.createContext(context);
-  vm.runInContext(code, context, { filename: scriptPath });
+  for (const scriptPath of scriptPaths) {
+    const code = fs.readFileSync(scriptPath, 'utf8');
+    vm.runInContext(code, context, { filename: scriptPath });
+  }
 }
 
 test('step 7 fails the round when email verification page has retry text but no code input', async () => {
@@ -208,6 +224,44 @@ test('step 7 fails the round when email verification page has retry text but no 
       message: response.error,
     },
   ]);
+});
+
+test('auth content bundle registers step-specific handlers for signup and oauth login separately', () => {
+  const context = createContext({
+    VerificationCode: { isVerificationCodeRejectedText() { return false; }, isVerificationRetryStateText() { return false; } },
+    PhoneVerification: { isPhoneVerificationRequiredText() { return false; }, getPhoneVerificationBlockedMessage() { return ''; } },
+    AuthFatalErrors: { isAuthOperationTimedOutText() { return false; }, getAuthOperationTimedOutMessage() { return ''; }, isAuthFatalErrorText() { return false; }, isUnsupportedCountryRegionTerritoryText() { return false; }, getUnsupportedCountryRegionTerritoryMessage() { return ''; } },
+    UnsupportedEmail: { isUnsupportedEmailText() { return false; }, isUnsupportedEmailBlockingStep() { return false; }, getUnsupportedEmailBlockedMessage() { return ''; } },
+    resetStopState() {},
+    isStopError() { return false; },
+    log() {},
+    reportError() {},
+  });
+
+  loadSignupPageBundle(context);
+
+  const registry = context.__MULTIPAGE_OPENAI_AUTH_FLOW__;
+  assert.ok(registry, 'expected auth flow registry to be exposed');
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(registry.getRegisteredStepMetadata())),
+    [
+      { step: 2, name: 'platform-signup-entry' },
+      { step: 3, name: 'signup-credentials' },
+      { step: 5, name: 'signup-profile' },
+      { step: 6, name: 'oauth-login' },
+      { step: 8, name: 'oauth-consent' },
+    ]
+  );
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(registry.getRegisteredActionMetadata())),
+    [
+      { type: 'CHECK_AUTH_PAGE_STATE', name: 'auth-page-state' },
+      { type: 'CLICK_RESEND_EMAIL', name: 'resend-email' },
+      { type: 'FILL_CODE', name: 'verification-code' },
+      { type: 'STEP8_FIND_AND_CLICK', name: 'oauth-consent-click' },
+      { type: 'STEP8_TRY_SUBMIT', name: 'oauth-consent-submit' },
+    ]
+  );
 });
 
 test('step 7 reports the phone-verification blocker without auth-domain decoration before the code input appears', async () => {
@@ -386,6 +440,48 @@ test('step 2 completes immediately when the platform login page is already showi
   const response = await new Promise((resolve, reject) => {
     const keepAlive = listener(
       { type: 'EXECUTE_STEP', step: 2, payload: {} },
+      {},
+      (result) => resolve(result)
+    );
+    assert.equal(keepAlive, true);
+    setTimeout(() => reject(new Error('timeout waiting for response')), 2000);
+  });
+
+  assert.equal(response?.ok, true);
+  assert.deepEqual(context.__errors, []);
+  assert.deepEqual(context.__completions, [
+    {
+      step: 2,
+      payload: undefined,
+    },
+  ]);
+});
+
+test('step 2 still accepts the platform login email form when recovery prefers a signup entry', async () => {
+  const emailInput = {
+    getBoundingClientRect() {
+      return { width: 160, height: 40 };
+    },
+  };
+
+  const context = createContext({
+    href: 'https://platform.openai.com/login',
+    bodyText: 'Build on the OpenAI API Platform',
+    querySelectorAllImpl(selector) {
+      if (selector === 'input[type="email"]') {
+        return [emailInput];
+      }
+      return [];
+    },
+  });
+  loadSignupPage(context);
+
+  const listener = context.__listeners[0];
+  assert.ok(listener, 'expected signup-page to register a runtime listener');
+
+  const response = await new Promise((resolve, reject) => {
+    const keepAlive = listener(
+      { type: 'EXECUTE_STEP', step: 2, payload: { preferSignupEntry: true } },
       {},
       (result) => resolve(result)
     );
@@ -638,7 +734,7 @@ test('step 2 re-checks for the direct credential form before failing when no reg
   ]);
 });
 
-test('step 2 clicks register on the platform login page when recovery requires re-entering the signup path', async () => {
+test('step 2 prefers the direct platform login email form over clicking register during signup-entry recovery', async () => {
   const emailInput = {
     getBoundingClientRect() {
       return { width: 200, height: 44 };
@@ -688,7 +784,7 @@ test('step 2 clicks register on the platform login page when recovery requires r
   });
 
   assert.equal(response?.ok, true);
-  assert.equal(clickedTarget, registerButton);
+  assert.equal(clickedTarget, null);
   assert.deepEqual(context.__errors, []);
   assert.deepEqual(context.__completions, [
     {
@@ -795,8 +891,8 @@ test('step 3 submits the email first and then switches to passwordless login whe
   );
 });
 
-test('step 3 fills the password before the first continue click when the password field is already visible', async () => {
-  const emailInput = {
+test('step 3 skips refilling the identifier when the signup password page is already visible', async () => {
+  const usernameInput = {
     getBoundingClientRect() {
       return { width: 220, height: 42 };
     },
@@ -821,7 +917,7 @@ test('step 3 fills the password before the first continue click when the passwor
     bodyText: '创建密码 继续',
     waitForElementImpl(selector) {
       if (selector.includes('type="email"') || selector.includes('name="email"')) {
-        return Promise.resolve(emailInput);
+        return Promise.resolve(usernameInput);
       }
       return Promise.reject(new Error(`missing: ${selector}`));
     },
@@ -832,6 +928,9 @@ test('step 3 fills the password before the first continue click when the passwor
       return null;
     },
     querySelectorAllImpl(selector) {
+      if (selector === 'input[name="username"]') {
+        return [usernameInput];
+      }
       if (selector === 'input[type="password"]') {
         return [passwordInput];
       }
@@ -865,7 +964,7 @@ test('step 3 fills the password before the first continue click when the passwor
   });
 
   assert.equal(response?.ok, true);
-  assert.deepEqual(filledValues, ['demo@example.com', 'secret-pass']);
+  assert.deepEqual(filledValues, ['secret-pass']);
   assert.deepEqual(clickedTargets, [continueButton]);
   assert.deepEqual(context.__errors, []);
   assert.deepEqual(
@@ -945,7 +1044,7 @@ test('step 3 only completes after the password fallback submit actually advances
   });
 
   assert.equal(response?.ok, true);
-  assert.deepEqual(filledValues, ['demo@example.com', 'secret-pass']);
+  assert.deepEqual(filledValues, ['secret-pass']);
   assert.deepEqual(completionUrls, ['https://auth.openai.com/email-verification']);
   assert.deepEqual(context.__errors, []);
   assert.deepEqual(
@@ -1469,7 +1568,7 @@ test('step 2 logs out first when platform login redirects into an already-signed
       return Promise.reject(new Error(`missing: ${selector}`));
     },
     waitForElementByTextImpl(_selector, pattern) {
-      if (/sign\s*up|register|create\s*account|注册/i.test(String(pattern)) && /auth\.openai\.com\/log-in/i.test(context.location.href)) {
+      if (/sign\s*up|register|create\s*account|注册/i.test(String(pattern)) && /platform\.openai\.com\/login/i.test(context.location.href)) {
         return Promise.resolve(registerButton);
       }
       return Promise.reject(new Error('missing'));
@@ -1576,7 +1675,7 @@ test('step 2 waits for platform login to finish redirecting through home before 
       return Promise.reject(new Error(`missing: ${selector}`));
     },
     waitForElementByTextImpl(_selector, pattern) {
-      if (/sign\s*up|register|create\s*account|注册/i.test(String(pattern)) && /auth\.openai\.com\/log-in/i.test(context.location.href)) {
+      if (/sign\s*up|register|create\s*account|注册/i.test(String(pattern)) && /platform\.openai\.com\/login/i.test(context.location.href)) {
         return Promise.resolve(registerButton);
       }
       return Promise.reject(new Error('missing'));
@@ -1958,7 +2057,7 @@ test('step 2 retries the platform avatar with a low-level pointer sequence when 
       return Promise.reject(new Error(`missing: ${selector}`));
     },
     waitForElementByTextImpl(_selector, pattern) {
-      if (/sign\s*up|register|create\s*account|注册/i.test(String(pattern)) && /auth\.openai\.com\/log-in/i.test(context.location.href)) {
+      if (/sign\s*up|register|create\s*account|注册/i.test(String(pattern)) && /platform\.openai\.com\/login/i.test(context.location.href)) {
         return Promise.resolve(registerButton);
       }
       return Promise.reject(new Error('missing'));
@@ -2070,7 +2169,7 @@ test('step 2 opens the responsive platform shell menu before clicking the avatar
       return Promise.reject(new Error(`missing: ${selector}`));
     },
     waitForElementByTextImpl(_selector, pattern) {
-      if (/sign\s*up|register|create\s*account|注册/i.test(String(pattern)) && /auth\.openai\.com\/log-in/i.test(context.location.href)) {
+      if (/sign\s*up|register|create\s*account|注册/i.test(String(pattern)) && /platform\.openai\.com\/login/i.test(context.location.href)) {
         return Promise.resolve(registerButton);
       }
       return Promise.reject(new Error('missing'));
@@ -2210,7 +2309,7 @@ test('step 2 clicks the radix logout menu item container instead of the inner lo
       return Promise.reject(new Error(`missing: ${selector}`));
     },
     waitForElementByTextImpl(_selector, pattern) {
-      if (/sign\s*up|register|create\s*account|注册/i.test(String(pattern)) && /auth\.openai\.com\/log-in/i.test(context.location.href)) {
+      if (/sign\s*up|register|create\s*account|注册/i.test(String(pattern)) && /platform\.openai\.com\/login/i.test(context.location.href)) {
         return Promise.resolve(registerButton);
       }
       return Promise.reject(new Error('missing'));
@@ -2352,7 +2451,7 @@ test('step 2 ignores broad account summary nodes that merely contain logout text
       return Promise.reject(new Error(`missing: ${selector}`));
     },
     waitForElementByTextImpl(_selector, pattern) {
-      if (/sign\s*up|register|create\s*account|注册/i.test(String(pattern)) && /auth\.openai\.com\/log-in/i.test(context.location.href)) {
+      if (/sign\s*up|register|create\s*account|注册/i.test(String(pattern)) && /platform\.openai\.com\/login/i.test(context.location.href)) {
         return Promise.resolve(registerButton);
       }
       return Promise.reject(new Error('missing'));
@@ -2513,7 +2612,7 @@ test('step 3 keeps filling the credential form when stale timeout copy is visibl
   });
 
   assert.equal(response?.ok, true);
-  assert.deepEqual(filledValues, ['demo@example.com', 'secret-pass']);
+  assert.deepEqual(filledValues, ['secret-pass']);
   assert.deepEqual(clickedTargets, [continueButton]);
   assert.deepEqual(context.__errors, []);
   assert.deepEqual(
@@ -2527,6 +2626,133 @@ test('step 3 keeps filling the credential form when stale timeout copy is visibl
       },
     ]
   );
+});
+
+test('step 3 reopens platform login instead of filling password when platform continue lands on an operation timeout state', async () => {
+  const emailInput = {
+    getBoundingClientRect() {
+      return { width: 220, height: 42 };
+    },
+  };
+  const passwordInput = {
+    getBoundingClientRect() {
+      return { width: 220, height: 42 };
+    },
+  };
+  const continueButton = {
+    textContent: 'Continue',
+    getBoundingClientRect() {
+      return { width: 240, height: 48 };
+    },
+  };
+
+  const filledValues = [];
+  const clickedTargets = [];
+  const state = {
+    passwordVisible: false,
+  };
+
+  const context = createContext({
+    href: 'https://platform.openai.com/login',
+    bodyText: 'Build on the OpenAI API Platform Continue',
+    waitForElementImpl(selector) {
+      if (selector.includes('type="email"') || selector.includes('name="email"')) {
+        return Promise.resolve(emailInput);
+      }
+      return Promise.reject(new Error(`missing: ${selector}`));
+    },
+    querySelectorImpl(selector) {
+      if (selector === 'button[type="submit"]') {
+        return continueButton;
+      }
+      return null;
+    },
+    querySelectorAllImpl(selector) {
+      if (selector === 'input[type="email"]') {
+        return [emailInput];
+      }
+      if (selector === 'input[type="password"]') {
+        return state.passwordVisible ? [passwordInput] : [];
+      }
+      return [];
+    },
+  });
+  context.AuthFatalErrors = AuthFatalErrors;
+  context.fillInput = (_target, value) => {
+    filledValues.push(value);
+  };
+  context.simulateClick = (target) => {
+    clickedTargets.push(target);
+    if (target === continueButton) {
+      state.passwordVisible = true;
+      context.document.body.innerText = '糟糕，出错了！ Operation timed out 创建密码 Continue';
+    }
+  };
+
+  loadSignupPage(context);
+
+  const listener = context.__listeners[0];
+  assert.ok(listener, 'expected signup-page to register a runtime listener');
+
+  const response = await new Promise((resolve, reject) => {
+    const keepAlive = listener(
+      { type: 'EXECUTE_STEP', step: 3, payload: { email: 'demo@example.com', password: 'secret-pass' } },
+      {},
+      (result) => resolve(result)
+    );
+    assert.equal(keepAlive, true);
+    setTimeout(() => reject(new Error('timeout waiting for response')), 3000);
+  });
+
+  assert.equal(
+    response?.error,
+    'Step 3 blocked: OpenAI auth page timed out before credentials could be submitted. Reopen the platform login page and retry with the same email and password.'
+  );
+  assert.deepEqual(filledValues, ['demo@example.com']);
+  assert.deepEqual(clickedTargets, [continueButton]);
+  assert.deepEqual(context.__completions, []);
+  assert.deepEqual(context.__errors, [
+    {
+      step: 3,
+      message: response.error,
+    },
+  ]);
+});
+
+test('step 3 completes immediately when reinjected on the email-verification page after credentials were already submitted', async () => {
+  const context = createContext({
+    href: 'https://auth.openai.com/email-verification',
+    bodyText: 'Enter verification code',
+  });
+  context.AuthFatalErrors = AuthFatalErrors;
+  loadSignupPage(context);
+
+  const listener = context.__listeners[0];
+  assert.ok(listener, 'expected signup-page to register a runtime listener');
+
+  const response = await new Promise((resolve, reject) => {
+    const keepAlive = listener(
+      { type: 'EXECUTE_STEP', step: 3, payload: { email: 'demo@example.com', password: 'secret-pass' } },
+      {},
+      (result) => resolve(result)
+    );
+    assert.equal(keepAlive, true);
+    setTimeout(() => reject(new Error('timeout waiting for response')), 3000);
+  });
+
+  assert.equal(response?.ok, true);
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(context.__completions)),
+    [
+      {
+        step: 3,
+        payload: {
+          email: 'demo@example.com',
+        },
+      },
+    ]
+  );
+  assert.deepEqual(context.__errors, []);
 });
 
 test('auth page state exposes operation timeout pages before inbox polling begins', async () => {
@@ -3948,6 +4174,102 @@ test('step 4 succeeds on about-you when the profile form only exposes placeholde
   assert.equal(context.__completions[0].step, 4);
 });
 
+test('step 4 accepts a fast about-you redirect even when the page only exposes a numeric age field at first', async () => {
+  let fakeNow = 0;
+  const codeInput = {
+    inputMode: 'numeric',
+    getBoundingClientRect() {
+      return { width: 120, height: 40 };
+    },
+    dispatchEvent() {},
+    focus() {},
+  };
+  const submitButton = {
+    textContent: '继续',
+    disabled: false,
+    getAttribute() {
+      return null;
+    },
+    getBoundingClientRect() {
+      return { width: 160, height: 44 };
+    },
+  };
+  const ageOnlyInput = {
+    inputMode: 'numeric',
+    getBoundingClientRect() {
+      return { width: 120, height: 40 };
+    },
+  };
+
+  const context = createContext({
+    href: 'https://auth.openai.com/email-verification',
+    bodyText: '检查您的收件箱 输入我们刚刚发送的验证码',
+    waitForElementImpl(selector) {
+      if (selector.includes('input[name="code"]')) {
+        return Promise.resolve(codeInput);
+      }
+      return Promise.reject(new Error(`missing: ${selector}`));
+    },
+    querySelectorImpl(selector) {
+      if (selector === 'button[type="submit"]') {
+        return submitButton;
+      }
+      return null;
+    },
+    querySelectorAllImpl(selector) {
+      const onAboutYou = /about-you/i.test(context.location.href);
+      if (selector === 'input[name="code"]') {
+        return onAboutYou ? [] : [codeInput];
+      }
+      if (selector === 'input[inputmode="numeric"]') {
+        return onAboutYou ? [ageOnlyInput] : [codeInput];
+      }
+      if (selector === 'input[name="name"]') {
+        return [];
+      }
+      if (selector === 'input[name="age"]') {
+        return [];
+      }
+      return [];
+    },
+  });
+  context.Date = class extends Date {
+    static now() {
+      return fakeNow;
+    }
+  };
+  context.fillInput = () => {};
+  context.sleep = (ms = 0) => {
+    fakeNow += Math.max(1, Number(ms) || 0);
+    return Promise.resolve();
+  };
+  context.simulateClick = (target) => {
+    if (target === submitButton) {
+      context.location.href = 'https://auth.openai.com/about-you';
+      context.document.body.innerText = '你的年龄是多少？ 年龄';
+    }
+  };
+  loadSignupPage(context);
+
+  const listener = context.__listeners[0];
+  assert.ok(listener, 'expected signup-page to register a runtime listener');
+
+  const response = await new Promise((resolve, reject) => {
+    const keepAlive = listener(
+      { type: 'FILL_CODE', step: 4, payload: { code: '123456' } },
+      {},
+      (result) => resolve(result)
+    );
+    assert.equal(keepAlive, true);
+    setTimeout(() => reject(new Error('timeout waiting for response')), 3000);
+  });
+
+  assert.equal(response?.ok, true);
+  assert.deepEqual(context.__errors, []);
+  assert.equal(context.__completions.length, 1);
+  assert.equal(context.__completions[0].step, 4);
+});
+
 test('step 5 completes and lets the flow continue when the profile form never appears after verification', async () => {
   const context = createContext({
     href: 'https://auth.openai.com/u/signup/continue',
@@ -4099,6 +4421,71 @@ test('step 5 fills the welcome-create full name field when the page uses an Engl
     fills.some((entry) => entry.input === nameInput && entry.value === 'Logan Lee'),
     true
   );
+});
+
+test('step 5 treats the welcome-create landing without birthday or age inputs as an already-completed post-profile page', async () => {
+  const nameInput = {
+    getBoundingClientRect() {
+      return { width: 240, height: 40 };
+    },
+    dispatchEvent() {},
+    focus() {},
+  };
+
+  const fills = [];
+
+  const context = createContext({
+    href: 'https://platform.openai.com/welcome?step=create',
+    bodyText: 'Create your account Welcome',
+    waitForElementImpl(selector) {
+      if (selector.includes('input[placeholder*="name" i]')) {
+        return Promise.resolve(nameInput);
+      }
+      return Promise.reject(new Error(`missing: ${selector}`));
+    },
+    querySelectorImpl() {
+      return null;
+    },
+    querySelectorAllImpl(selector) {
+      if (selector === 'input[name="name"], input[name="age"], input[name="birthday"], [role="spinbutton"][data-type="year"], [role="spinbutton"][data-type="month"], [role="spinbutton"][data-type="day"]') {
+        return [nameInput];
+      }
+      return [];
+    },
+  });
+  context.fillInput = (input, value) => {
+    fills.push({ input, value: String(value) });
+  };
+  loadSignupPage(context);
+
+  const listener = context.__listeners[0];
+  assert.ok(listener, 'expected signup-page to register a runtime listener');
+
+  const response = await new Promise((resolve, reject) => {
+    const keepAlive = listener(
+      {
+        type: 'EXECUTE_STEP',
+        step: 5,
+        payload: {
+          firstName: 'Logan',
+          lastName: 'Lee',
+          year: 1995,
+          month: 8,
+          day: 21,
+        },
+      },
+      {},
+      (result) => resolve(result)
+    );
+    assert.equal(keepAlive, true);
+    setTimeout(() => reject(new Error('timeout waiting for response')), 3000);
+  });
+
+  assert.equal(response?.ok, true);
+  assert.deepEqual(context.__errors, []);
+  assert.equal(context.__completions.length, 1);
+  assert.equal(context.__completions[0].step, 5);
+  assert.equal(fills.length, 0);
 });
 
 test('step 5 does not report success when the profile form disappears but the page still looks like about-you', async () => {

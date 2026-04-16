@@ -247,6 +247,38 @@ https://<your-inbucket-host>/m/<mailbox>/
 8. `OAuth Auto Confirm`
 9. `VPS Verify`
 
+## Platform Signup Entry Flow
+
+这条流负责“从平台注册入口发起注册，并把账号创建到可进入 OAuth 登录前状态”。
+
+- 入口：`Step 2`
+- 固定入口页：`https://platform.openai.com/login`
+- 负责步骤：`Step 2 -> Step 3 -> Step 4 -> Step 5`
+- 成功标志：完成注册邮箱提交、验证码确认、资料页填写
+- 常见阻断：平台仍停在已登录会话、注册页超时、Unsupported Email、手机号验证
+
+调试建议：
+
+- 先看是不是还停在 `platform.openai.com/login`
+- 再看是否已经前进到 `email-verification` / `about-you`
+- 最后区分是 Step 3 凭证提交问题，还是 Step 4 / Step 5 页面推进问题
+
+## OAuth Login Flow
+
+这条流负责“拿着已经注册好的账号，重新进入 OAuth 登录链路并完成授权回调”。
+
+- 入口：`Step 6`
+- 固定入口动作：先刷新最新 OAuth 链接，再重开登录链路
+- 负责步骤：`Step 6 -> Step 7 -> Step 8 -> Step 9`
+- 成功标志：抓到 localhost callback，并在 VPS 面板回填验证
+- 常见阻断：密码页不推进、登录验证码错误、OAuth 同意页点击失败、VPS 面板 502
+
+调试建议：
+
+- 先确认 Step 6 是否拿到了最新 OAuth URL
+- 再看是卡在登录邮箱页 / 密码页，还是已经进入邮箱验证码页
+- 如果 Step 8 已完成，就只需要围绕 localhost callback 和 Step 9 去排查
+
 ### Step 1: Get OAuth Link
 
 - 打开 VPS OAuth 面板
@@ -489,7 +521,18 @@ Auto 会按顺序执行完整流程，并支持：
 background.js                    后台主控，编排 1~9 步、Auto、状态管理
 manifest.json                    MV3 扩展清单
 
-content/signup-page.js           OpenAI 注册 / 登录 / OAuth 同意页逻辑
+content/signup-page.js           OpenAI auth shared shell，只保留公共路由与共享 helper
+content/openai-auth-step3-flow.js
+                                 Platform Signup Entry Flow 的 Step 3 实现
+content/openai-auth-step6-flow.js
+                                 OAuth Login Flow 的 Step 6 实现
+content/openai-auth-step2-handler.js
+content/openai-auth-step3-handler.js
+content/openai-auth-step5-handler.js
+content/openai-auth-step6-handler.js
+content/openai-auth-step8-handler.js
+content/openai-auth-actions-handler.js
+                                 OpenAI auth 各步骤 / 动作的显式注册入口
 content/vps-panel.js             VPS 面板 Step 1 / Step 9
 content/duck-mail.js             Duck 地址获取
 content/qq-mail.js               QQ 邮箱轮询

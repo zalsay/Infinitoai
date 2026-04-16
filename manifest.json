@@ -42,7 +42,7 @@
         "https://auth.openai.com/*",
         "https://accounts.openai.com/*"
       ],
-      "js": ["shared/verification-code.js", "shared/phone-verification.js", "shared/auth-fatal-errors.js", "shared/unsupported-email.js", "content/utils.js", "content/signup-page.js"],
+      "js": ["shared/verification-code.js", "shared/phone-verification.js", "shared/auth-fatal-errors.js", "shared/unsupported-email.js", "content/utils.js", "content/signup-page.js", "content/openai-auth-step3-flow.js", "content/openai-auth-step6-flow.js", "content/openai-auth-step2-handler.js", "content/openai-auth-step3-handler.js", "content/openai-auth-step5-handler.js", "content/openai-auth-step6-handler.js", "content/openai-auth-step8-handler.js", "content/openai-auth-actions-handler.js"],
       "run_at": "document_idle"
     },
     {

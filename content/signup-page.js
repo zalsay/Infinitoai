@@ -19,6 +19,47 @@ const {
   isUnsupportedCountryRegionTerritoryText,
 } = AuthFatalErrors;
 const { getUnsupportedEmailBlockedMessage, isUnsupportedEmailBlockingStep, isUnsupportedEmailText } = UnsupportedEmail;
+const authFlow = window.__MULTIPAGE_OPENAI_AUTH_FLOW__ || (() => {
+  const stepHandlers = new Map();
+  const actionHandlers = new Map();
+
+  return (window.__MULTIPAGE_OPENAI_AUTH_FLOW__ = {
+    registerStepHandler(step, handler, metadata = {}) {
+      stepHandlers.set(Number(step), {
+        handler,
+        metadata: {
+          step: Number(step),
+          name: String(metadata?.name || ''),
+        },
+      });
+    },
+    registerActionHandler(type, handler, metadata = {}) {
+      actionHandlers.set(String(type), {
+        handler,
+        metadata: {
+          type: String(type),
+          name: String(metadata?.name || ''),
+        },
+      });
+    },
+    getStepHandler(step) {
+      return stepHandlers.get(Number(step))?.handler || null;
+    },
+    getActionHandler(type) {
+      return actionHandlers.get(String(type))?.handler || null;
+    },
+    getRegisteredStepMetadata() {
+      return Array.from(stepHandlers.values())
+        .map((entry) => entry.metadata)
+        .sort((left, right) => left.step - right.step);
+    },
+    getRegisteredActionMetadata() {
+      return Array.from(actionHandlers.values())
+        .map((entry) => entry.metadata)
+        .sort((left, right) => String(left.type).localeCompare(String(right.type)));
+    },
+  });
+})();
 
 // Listen for commands from Background
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -47,28 +88,20 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 });
 
 async function handleCommand(message) {
-  switch (message.type) {
-    case 'EXECUTE_STEP':
-      switch (message.step) {
-        case 2: return await step2_clickRegister(message.payload);
-        case 3: return await step3_fillEmailPassword(message.payload);
-        case 5: return await step5_fillNameBirthday(message.payload);
-        case 6: return await step6_login(message.payload);
-        case 8: return await step8_findAndClick();
-        default: throw new Error(`signup-page.js does not handle step ${message.step}`);
-      }
-    case 'FILL_CODE':
-      // Step 4 = signup code, Step 7 = login code (same handler)
-      return await fillVerificationCode(message.step, message.payload);
-    case 'CLICK_RESEND_EMAIL':
-      return await clickResendEmail(message.step);
-    case 'STEP8_FIND_AND_CLICK':
-      return await step8_findAndClick();
-    case 'STEP8_TRY_SUBMIT':
-      return await step8_trySubmit();
-    case 'CHECK_AUTH_PAGE_STATE':
-      return getAuthPageState();
+  if (message.type === 'EXECUTE_STEP') {
+    const stepHandler = authFlow.getStepHandler(message.step);
+    if (!stepHandler) {
+      throw new Error(`signup-page.js does not handle step ${message.step}`);
+    }
+    return await stepHandler(message.payload, message);
   }
+
+  const actionHandler = authFlow.getActionHandler(message.type);
+  if (!actionHandler) {
+    throw new Error(`signup-page.js does not handle message type ${message.type}`);
+  }
+
+  return await actionHandler(message);
 }
 
 // ============================================================
@@ -91,7 +124,6 @@ const CREDENTIAL_INPUT_SELECTORS = [
 
 const CREDENTIAL_INPUT_SELECTOR = CREDENTIAL_INPUT_SELECTORS.join(', ');
 const PLATFORM_LOGIN_ENTRY_URL = 'https://platform.openai.com/login';
-const AUTH_LOGIN_HOME_URL = 'https://auth.openai.com/log-in';
 const PLATFORM_SIGNING_BRIDGE_ISSUE_TIMEOUT_MS = 45000;
 
 async function step2_clickRegister(payload = {}) {
@@ -324,8 +356,30 @@ async function logoutFromPlatformChatSessionIfNeeded() {
 
   await clickPlatformLogoutAction(logoutLabel);
   await waitForPlatformLogoutRedirect();
+  await ensurePlatformLoginEntryAfterLogout();
   log('Step 2: Logged out of the existing platform chat session and returned to the login page.', 'warn');
   return true;
+}
+
+async function ensurePlatformLoginEntryAfterLogout(timeout = 15000) {
+  if (!isPlatformLoginEntryPage()) {
+    log('Step 2: Logout landed outside the platform login entry. Reopening https://platform.openai.com/login before continuing...', 'warn');
+    location.href = PLATFORM_LOGIN_ENTRY_URL;
+  }
+
+  const start = Date.now();
+
+  while (Date.now() - start < timeout) {
+    throwIfStopped();
+
+    if (isPlatformLoginEntryPage()) {
+      return true;
+    }
+
+    await sleep(250);
+  }
+
+  throw new Error('Timed out waiting for the platform login entry after logout.');
 }
 
 function isPlatformChatSessionPage() {
@@ -570,7 +624,8 @@ async function waitForPlatformLogoutRedirect(timeout = 15000) {
   while (Date.now() - start < timeout) {
     throwIfStopped();
 
-    if (/(auth\.openai\.com\/log-in|platform\.openai\.com\/login)/i.test(location.href)) {
+    const currentUrl = String(location.href || '');
+    if (/platform\.openai\.com\/login/i.test(currentUrl) || /auth\.openai\.com\/log-in/i.test(currentUrl)) {
       return true;
     }
 
@@ -591,6 +646,12 @@ function isDirectSignupFormVisible(options = {}) {
   const currentUrl = String(location.href || '');
 
   if (preferSignupEntry) {
+    // platform.openai.com/login is a special email-first signup entry:
+    // Step 2/3 may legitimately recover here, fill the email, and let OpenAI
+    // route the flow into the signup password screen after Continue.
+    if (/platform\.openai\.com\/login/i.test(currentUrl)) {
+      return hasVisibleCredentialInput();
+    }
     if (!/(create-account|\/u\/signup\/)/i.test(currentUrl)) {
       return false;
     }
@@ -632,6 +693,9 @@ async function waitForStep3SignupContext(timeout = 8000) {
     if (isDirectPlatformLoginStep3Entry(location.href)) {
       return true;
     }
+    if (isStep3AlreadyAdvancedPage(visibleText, location.href)) {
+      return true;
+    }
     if (isUnsupportedEmailBlockingStep(3) && isUnsupportedEmailText(visibleText, location.href)) {
       throw new Error(getUnsupportedEmailBlockedMessage(3));
     }
@@ -646,116 +710,6 @@ async function waitForStep3SignupContext(timeout = 8000) {
   }
 
   throw new Error(`Step 3 blocked: current auth page is not on the signup flow yet. URL: ${location.href}`);
-}
-
-// ============================================================
-// Step 3: Fill Email & Password
-// ============================================================
-
-async function step3_fillEmailPassword(payload) {
-  const { email } = payload;
-  if (!email) throw new Error('No email provided. Paste email in Side Panel first.');
-
-  throwIfAuthOperationTimedOut(3);
-  await waitForStep3SignupContext();
-  log(`Step 3: Filling email: ${email}`);
-
-  // Find email input
-  let emailInput = null;
-  try {
-    emailInput = await waitForElement(
-      CREDENTIAL_INPUT_SELECTOR,
-      10000
-    );
-  } catch {
-    if (await handleAuthReturnHomeRecovery(3)) {
-      throw new Error(getAuthReturnHomeRecoveryErrorMessage(3));
-    }
-    throwIfAuthOperationTimedOut(3);
-    if (isBlockingAuthFatalError(getVisiblePageText())) {
-      throw new Error('Auth fatal error page detected before the email input appeared.');
-    }
-    throw new Error('Could not find email input field on signup page. URL: ' + location.href);
-  }
-
-  await humanPause(500, 1400);
-  fillInput(emailInput, email);
-  log('Step 3: Email filled');
-
-  const inlineCredentialChoice = findStep3ImmediateCredentialChoice();
-  if (inlineCredentialChoice?.passwordInput) {
-    let passwordInput = inlineCredentialChoice.passwordInput;
-    if (isSignupFlowUnexpectedlyOnLoginPasswordPage()) {
-      const recoveredSignupPasswordInput = await recoverStep3SignupPasswordInputFromLoginPasswordPage();
-      if (recoveredSignupPasswordInput) {
-        passwordInput = recoveredSignupPasswordInput;
-      } else {
-        log('Step 3: Signup flow fell back to the existing-account login password page without a visible signup entry. Preserving the current email/password and continuing with the login flow instead of requesting a signup code.', 'warn');
-        reportComplete(3, { email, existingAccountLogin: true });
-        return;
-      }
-    }
-    log('Step 3: Password field is already visible on the same page. Filling password before the first continue click...');
-    const submissionStartUrl = await submitStep3WithPassword(payload, passwordInput);
-    await waitForStep3CredentialSubmissionOutcome(submissionStartUrl);
-    reportComplete(3, { email });
-    return;
-  }
-  if (inlineCredentialChoice?.otpButton) {
-    await humanPause(450, 1200);
-    simulateClick(inlineCredentialChoice.otpButton);
-    log('Step 3: Selected one-time-code login for registration.');
-    reportComplete(3, { email, usesOneTimeCode: true });
-    return;
-  }
-
-  log('Step 3: Submitting email and checking whether one-time-code login is available...');
-  const emailSubmitBtn = document.querySelector('button[type="submit"]')
-    || await waitForElementByText('button', /continue|next|submit|继续|下一步/i, 5000).catch(() => null);
-
-  if (emailSubmitBtn) {
-    await humanPause(400, 1100);
-    simulateClick(emailSubmitBtn);
-    log('Step 3: Submitted email, waiting for passwordless login or password field...');
-    await sleep(2000);
-  }
-
-  const passwordlessChoice = await waitForPasswordlessOrPasswordField();
-  if (passwordlessChoice?.otpButton) {
-    await humanPause(450, 1200);
-    simulateClick(passwordlessChoice.otpButton);
-    log('Step 3: Selected one-time-code login for registration.');
-    reportComplete(3, { email, usesOneTimeCode: true });
-    return;
-  }
-
-  let passwordInput = passwordlessChoice?.passwordInput || null;
-  if (!passwordInput) {
-    if (await handleAuthReturnHomeRecovery(3)) {
-      throw new Error(getAuthReturnHomeRecoveryErrorMessage(3));
-    }
-    throwIfAuthOperationTimedOut(3);
-    if (isBlockingAuthFatalError(getVisiblePageText())) {
-      throw new Error('Auth fatal error page detected before the password input appeared.');
-    }
-    throw new Error('Could not find passwordless-login button or password input after submitting email. URL: ' + location.href);
-  }
-
-  if (isSignupFlowUnexpectedlyOnLoginPasswordPage()) {
-    const recoveredSignupPasswordInput = await recoverStep3SignupPasswordInputFromLoginPasswordPage();
-    if (recoveredSignupPasswordInput) {
-      passwordInput = recoveredSignupPasswordInput;
-    } else {
-      log('Step 3: Email submit landed on the existing-account login password page without a visible signup entry. Preserving the current email/password and continuing with the login flow instead of requesting a signup code.', 'warn');
-      reportComplete(3, { email, existingAccountLogin: true });
-      return;
-    }
-  }
-
-  if (!payload.password) throw new Error('No password provided. Step 3 requires a generated password.');
-  const submissionStartUrl = await submitStep3WithPassword(payload, passwordInput);
-  await waitForStep3CredentialSubmissionOutcome(submissionStartUrl);
-  reportComplete(3, { email });
 }
 
 function isLoginPasswordPageUrl(url = location.href) {
@@ -827,6 +781,12 @@ async function recoverStep3SignupPasswordInputFromLoginPasswordPage() {
 
 function throwIfAuthOperationTimedOut(step, text = getVisiblePageText()) {
   if (isBlockingAuthOperationTimedOut(text)) {
+    throw new Error(getAuthOperationTimedOutMessage(step));
+  }
+}
+
+function throwIfPlatformLoginEntryTimedOut(step, text = getVisiblePageText()) {
+  if (isPlatformLoginEntryPage() && isAuthOperationTimedOutText(text)) {
     throw new Error(getAuthOperationTimedOutMessage(step));
   }
 }
@@ -931,6 +891,12 @@ async function submitVerificationCodeAndWait(step, submitInput = null) {
     log(`Step ${step}: Page rejected the code. Returning to inbox refresh.`, 'warn');
     return outcome;
   }
+
+  if (outcome.accepted) {
+    reportComplete(step);
+    return outcome;
+  }
+
   if (outcome.retrySubmit || (submitAttempted && hasActiveVerificationInput())) {
     throw new Error(`Verification form stayed visible after submit attempts. URL: ${location.href}`);
   }
@@ -1022,9 +988,10 @@ async function waitForVerificationSubmissionOutcome(step, hadRejectedStateBefore
     const visibleText = getVisiblePageText();
     const hasVisibleProfileInput = hasVisibleProfileFormInput();
     const onReadyProfilePage = hasReadyProfilePage(visibleText);
-    const onCanonicalAboutYouProfilePage = step === 4
+    const onCanonicalAboutYouPage = step === 4
       && isCanonicalAboutYouPage(location.href)
-      && hasVisibleProfileInput;
+      && !hasVisibleCredentialInput();
+    const onCanonicalAboutYouProfilePage = onCanonicalAboutYouPage && hasVisibleProfileInput;
     const hasVisibleVerificationInputNow = hasVisibleVerificationInput();
     const hasVisibleInput = hasActiveVerificationInput();
     if (isBlockingAuthFatalError(visibleText)) {
@@ -1046,12 +1013,12 @@ async function waitForVerificationSubmissionOutcome(step, hadRejectedStateBefore
       throw new Error('Verification page entered retry state after submitting the verification code. Restart this run.');
     }
 
-    if (location.href !== startUrl || onReadyProfilePage || onCanonicalAboutYouProfilePage) {
+    if (location.href !== startUrl || onReadyProfilePage || onCanonicalAboutYouPage) {
       return {
         accepted: true,
         reason: onReadyProfilePage
           ? 'profile-form-visible'
-          : (onCanonicalAboutYouProfilePage ? 'canonical-about-you-profile-page' : 'page-advanced'),
+          : (onCanonicalAboutYouPage ? 'canonical-about-you-profile-page' : 'page-advanced'),
       };
     }
 
@@ -1072,7 +1039,7 @@ async function waitForVerificationSubmissionOutcome(step, hadRejectedStateBefore
     };
   }
 
-  if (step === 4 && isCanonicalAboutYouPage(location.href) && hasVisibleProfileFormInput()) {
+  if (step === 4 && isCanonicalAboutYouPage(location.href) && !hasVisibleCredentialInput()) {
     return {
       accepted: true,
       reason: 'canonical-about-you-profile-page',
@@ -1114,6 +1081,38 @@ function isCanonicalEmailVerificationPage(url = location.href) {
 
 function isCanonicalAboutYouPage(url = location.href) {
   return /(?:auth|accounts)\.openai\.com\/about-you/i.test(String(url || ''));
+}
+
+function isStep3AlreadyAdvancedPage(text = getVisiblePageText(), url = location.href) {
+  if (hasReadyVerificationPage(text) || hasReadyProfilePage(text)) {
+    return true;
+  }
+
+  if (hasVisibleCredentialInput()) {
+    return false;
+  }
+
+  return isCanonicalEmailVerificationPage(url) || isCanonicalAboutYouPage(url);
+}
+
+function isStablePostProfileLandingUrl(url = location.href) {
+  const normalizedUrl = String(url || '').trim();
+  if (!normalizedUrl) {
+    return false;
+  }
+
+  try {
+    const parsed = new URL(normalizedUrl);
+    if (parsed.hostname === 'platform.openai.com' && /^\/auth\/callback$/i.test(parsed.pathname)) {
+      return true;
+    }
+    return parsed.hostname === 'platform.openai.com'
+      && /^\/welcome$/i.test(parsed.pathname)
+      && parsed.searchParams.get('step') === 'create';
+  } catch {
+    return /platform\.openai\.com\/auth\/callback/i.test(normalizedUrl)
+      || /platform\.openai\.com\/welcome\?step=create/i.test(normalizedUrl);
+  }
 }
 
 function hasReadyVerificationPage(text = getVisiblePageText()) {
@@ -1190,7 +1189,8 @@ function hasVisibleOauthConsentContinueButton(text = getVisiblePageText()) {
 }
 
 function hasStableNextPageAfterProfileSubmit(text = getVisiblePageText()) {
-  return hasVisibleOauthConsentContinueButton(text)
+  return isStablePostProfileLandingUrl()
+    || hasVisibleOauthConsentContinueButton(text)
     || Boolean(getPageOauthUrl())
     || hasVisibleCredentialInput()
     || hasReadyVerificationPage(text);
@@ -1427,68 +1427,6 @@ async function waitForPostProfileBlockingSettle(step, startUrl = location.href, 
   }
 
   throw new Error(`Step ${step} blocked: profile submit did not reach a stable next page. URL: ${location.href}`);
-}
-
-// ============================================================
-// Step 6: Login with registered account (on OAuth auth page)
-// ============================================================
-
-async function step6_login(payload) {
-  const { email, password } = payload;
-  if (!email) throw new Error('No email provided for login.');
-
-  log(`Step 6: Logging in with ${email}...`);
-  const latestPageOauthUrl = await resolveLatestPageOauthUrl();
-
-  // Wait for email input on the auth page
-  let emailInput = null;
-  try {
-    emailInput = await waitForElement(
-      'input[type="email"], input[name="email"], input[name="username"], input[id*="email"], input[placeholder*="email" i], input[placeholder*="Email"]',
-      15000
-    );
-  } catch {
-    throw new Error('Could not find email input on login page. URL: ' + location.href);
-  }
-
-  await humanPause(500, 1400);
-  fillInput(emailInput, email);
-  log('Step 6: Email filled');
-
-  // Submit email
-  await sleep(500);
-  const submitBtn1 = document.querySelector('button[type="submit"]')
-    || await waitForElementByText('button', /continue|next|submit|继续|下一步/i, 5000).catch(() => null);
-  if (submitBtn1) {
-    await humanPause(400, 1100);
-    simulateClick(submitBtn1);
-    log('Step 6: Submitted email');
-  }
-
-  const passwordInput = await waitForLoginPasswordField();
-  if (passwordInput) {
-    log('Step 6: Password field found, filling password...');
-    await humanPause(550, 1450);
-    fillInput(passwordInput, password);
-    log(`Step 6: Password filled: ${password}`);
-
-    await sleep(500);
-    const submitBtn2 = document.querySelector('button[type="submit"]')
-      || await waitForElementByText('button', /continue|log\s*in|submit|sign\s*in|登录|继续/i, 5000).catch(() => null);
-
-    if (submitBtn2) {
-      await humanPause(450, 1200);
-      simulateClick(submitBtn2);
-      log('Step 6: Submitted password, waiting for login outcome...');
-    }
-    await waitForLoginSubmissionOutcome();
-    reportComplete(6, { needsOTP: true, ...(latestPageOauthUrl ? { oauthUrl: latestPageOauthUrl } : {}) });
-    return;
-  }
-
-  // No password field — OTP flow
-  log('Step 6: No password field. OTP flow or auto-redirect.');
-  reportComplete(6, { needsOTP: true, ...(latestPageOauthUrl ? { oauthUrl: latestPageOauthUrl } : {}) });
 }
 
 async function waitForPasswordlessOrPasswordField(timeout = 10000) {
@@ -2003,10 +1941,6 @@ async function step5_fillNameBirthday(payload) {
     });
     return;
   }
-  await humanPause(500, 1300);
-  fillInput(nameInput, fullName);
-  log(`Step 5: Name filled: ${fullName}`);
-
   let birthdayMode = false;
   let ageInput = null;
 
@@ -2027,6 +1961,20 @@ async function step5_fillNameBirthday(payload) {
     }
     await sleep(100);
   }
+
+  if (!birthdayMode && !ageInput && isStablePostProfileLandingUrl()) {
+    log('Step 5: Landed on a stable post-profile page without birthday or age inputs after navigation replay. Treating the profile step as already completed.', 'warn');
+    reportComplete(5, {
+      recoveredAfterNavigation: true,
+      skippedProfileForm: true,
+      reason: 'stable_post_profile_landing_without_birthday_input',
+    });
+    return;
+  }
+
+  await humanPause(500, 1300);
+  fillInput(nameInput, fullName);
+  log(`Step 5: Name filled: ${fullName}`);
 
   if (birthdayMode) {
     if (!hasBirthdayData) {
@@ -2113,4 +2061,33 @@ async function step5_fillNameBirthday(payload) {
 
   reportComplete(5);
 }
+
+Object.assign(authFlow, {
+  step2_clickRegister,
+  step5_fillNameBirthday,
+  step8_findAndClick,
+  step8_trySubmit,
+  fillVerificationCode,
+  clickResendEmail,
+  getAuthPageState,
+  getVisiblePageText,
+  CREDENTIAL_INPUT_SELECTOR,
+  isDirectPlatformLoginStep3Entry,
+  isStep3AlreadyAdvancedPage,
+  waitForStep3SignupContext,
+  isSignupFlowUnexpectedlyOnLoginPasswordPage,
+  recoverStep3SignupPasswordInputFromLoginPasswordPage,
+  throwIfAuthOperationTimedOut,
+  throwIfPlatformLoginEntryTimedOut,
+  waitForPasswordlessOrPasswordField,
+  findStep3ImmediateCredentialChoice,
+  submitStep3WithPassword,
+  waitForStep3CredentialSubmissionOutcome,
+  isBlockingAuthFatalError,
+  getAuthReturnHomeRecoveryErrorMessage,
+  handleAuthReturnHomeRecovery,
+  resolveLatestPageOauthUrl,
+  waitForLoginPasswordField,
+  waitForLoginSubmissionOutcome,
+});
 })();
