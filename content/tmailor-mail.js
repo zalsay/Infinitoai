@@ -429,6 +429,34 @@ function getCurrentMailboxInputValue() {
   return input ? String(input.value || input.getAttribute?.('value') || '').trim() : '';
 }
 
+function normalizeEmailAddress(value) {
+  return String(value || '').trim().toLowerCase();
+}
+
+function getExpectedMailboxEmail(payload = {}) {
+  return normalizeEmailAddress(payload?.targetEmail || payload?.expectedEmail || '');
+}
+
+function checkExpectedMailboxEmail(payload = {}) {
+  const expectedEmail = getExpectedMailboxEmail(payload);
+  if (!expectedEmail) {
+    return null;
+  }
+
+  const pageEmail = normalizeEmailAddress(getCurrentMailboxInputValue());
+  if (!pageEmail || pageEmail === expectedEmail) {
+    return null;
+  }
+
+  log(`TMailor: Current page mailbox ${pageEmail} does not match the panel email ${expectedEmail}. Requesting a background mailbox reopen before refreshing.`, 'warn');
+  return {
+    recovery: 'reload_mailbox',
+    reason: 'mailbox_email_mismatch',
+    expectedEmail,
+    pageEmail,
+  };
+}
+
 function getPostConfirmMailboxRecoveryState() {
   const challengeTextVisible = hasCloudflareChallengeText();
   const currentEmailInput = getCurrentMailboxInput();
@@ -1849,7 +1877,12 @@ function parseMailRow(element, index) {
   };
 }
 
-async function refreshInbox() {
+async function refreshInbox(payload = {}) {
+  const mismatch = checkExpectedMailboxEmail(payload);
+  if (mismatch) {
+    return mismatch;
+  }
+
   assertNoFatalMailboxError();
   await handleMonetizationVideoAd(15000);
   await handleDismissibleInterstitialAd(5000);
@@ -1860,6 +1893,10 @@ async function refreshInbox() {
   if (refreshButton) {
     simulateClick(refreshButton);
     await sleepWithMailboxPatrol(1200, { reason: 'refreshing the inbox view' });
+    const postRefreshMismatch = checkExpectedMailboxEmail(payload);
+    if (postRefreshMismatch) {
+      return postRefreshMismatch;
+    }
     assertNoFatalMailboxError();
     await handleMonetizationVideoAd(15000);
     await handleDismissibleInterstitialAd(5000);
@@ -1872,6 +1909,10 @@ async function refreshInbox() {
   if (inboxButton) {
     simulateClick(inboxButton);
     await sleepWithMailboxPatrol(900, { reason: 'returning to the inbox view' });
+    const postInboxMismatch = checkExpectedMailboxEmail(payload);
+    if (postInboxMismatch) {
+      return postInboxMismatch;
+    }
     assertNoFatalMailboxError();
     await handleMonetizationVideoAd(15000);
     await handleDismissibleInterstitialAd(5000);
@@ -2043,7 +2084,10 @@ async function handlePollEmail(step, payload) {
     throwIfStopped();
     assertNoFatalMailboxError();
     if (attempt > 1) {
-      await refreshInbox();
+      const refreshResult = await refreshInbox(payload);
+      if (refreshResult?.recovery) {
+        return refreshResult;
+      }
     }
 
     const currentDetailResult = readCodeFromCurrentDetailPage(step, payload);

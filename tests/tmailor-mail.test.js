@@ -4976,6 +4976,78 @@ test('tmailor asks background to reload the mailbox instead of self-refreshing d
   );
 });
 
+test('tmailor asks background to reopen the mailbox when inbox refresh sees a different email than the panel state', async () => {
+  const context = createContext();
+  const state = context.__state;
+
+  const currentEmailInput = {
+    value: 'wrongbox@other.com',
+    disabled: false,
+    getAttribute(name) {
+      if (name === 'aria-label') return 'Your Temp Mail Address';
+      if (name === 'value') return this.value;
+      return null;
+    },
+    getBoundingClientRect() {
+      return { left: 250, top: 441, width: 520, height: 64 };
+    },
+  };
+  const refreshButton = {
+    id: 'refresh-inboxs',
+    tagName: 'BUTTON',
+    textContent: 'Refresh',
+    getBoundingClientRect() {
+      return { left: 420, top: 488, width: 96, height: 40 };
+    },
+  };
+
+  context.document.body = {
+    get innerText() {
+      return 'Your Temp Mail Address Refresh';
+    },
+    set innerText(value) {
+      state.bodyText = value;
+    },
+  };
+  context.document.querySelector = (selector) => {
+    if (selector === 'input[name="currentEmailAddress"]') return currentEmailInput;
+    if (selector === '#refresh-inboxs') return refreshButton;
+    return null;
+  };
+  context.document.querySelectorAll = (selector) => {
+    if (selector === 'button, [role="button"], a, summary') {
+      return [refreshButton];
+    }
+    if (selector === 'input, textarea') {
+      return [currentEmailInput];
+    }
+    return [];
+  };
+  context.simulateClick = (target) => {
+    state.clicked += 1;
+    state.lastClicked = target;
+  };
+  context.sleep = async () => {};
+
+  loadTmailorScript(context);
+  const hooks = context.__MULTIPAGE_TMAILOR_TEST_HOOKS;
+  assert.ok(hooks?.handlePollEmail, 'expected tmailor to expose handlePollEmail');
+
+  const result = await hooks.handlePollEmail(4, {
+    targetEmail: 'expectedbox@other.com',
+    maxAttempts: 2,
+    intervalMs: 0,
+  });
+
+  assert.equal(result?.recovery, 'reload_mailbox');
+  assert.equal(result?.reason, 'mailbox_email_mismatch');
+  assert.equal(state.clicked, 0);
+  assert.ok(
+    state.logs.some((entry) => /page mailbox .* does not match the panel email/i.test(entry.message)),
+    'expected a mismatch handoff log'
+  );
+});
+
 test('tmailor mailbox generation retries 100 times and suggests switching to com+whitelist mode when every domain is unsupported', async () => {
   const context = createContext();
   const state = context.__state;
