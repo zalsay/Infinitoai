@@ -667,32 +667,50 @@ async function createOrReuseCurrentAccountRecord(payload = {}) {
 
   if (
     currentIndex >= 0
-    && records[currentIndex].status === 'pending'
+    && (records[currentIndex].status === 'pending' || nextStatus === 'success')
     && records[currentIndex].email === email
     && records[currentIndex].password === password
   ) {
-    currentRecord = patchAccountRecord(records[currentIndex], basePatch);
+    currentRecord = patchAccountRecord(records[currentIndex], {
+      ...basePatch,
+      status: nextStatus,
+      statusDetail: nextStatusDetail,
+    });
     nextRecords[currentIndex] = currentRecord;
   } else {
     currentRecord = createAccountRecord({
       ...basePatch,
-      status: 'pending',
-      statusDetail: '',
+      status: nextStatus,
+      statusDetail: nextStatusDetail,
     });
     nextRecords.push(currentRecord);
   }
 
-  nextRecords = await setPersistentAccountRecords(nextRecords);
-  await setState({ currentAccountRecordId: currentRecord.id });
+  nextRecords = await setPersistentAccountRecords(nextRecords, { successOnly });
+  const nextCurrentAccountRecordId = nextRecords.some((record) => record.id === currentRecord.id)
+    ? currentRecord.id
+    : null;
+  await setState({ currentAccountRecordId: nextCurrentAccountRecordId });
   broadcastDataUpdate({ accountRecords: nextRecords });
-  return currentRecord;
+  return nextCurrentAccountRecordId ? currentRecord : null;
 }
 
 async function updateCurrentAccountRecord(updates = {}) {
   const state = await getState();
-  const records = normalizeAccountRecords(state.accountRecords);
+  const successOnly = isSuccessOnlyAccountRecordsEnabled(state);
+  const records = normalizeAccountRecords(state.accountRecords, { successOnly });
   const currentIndex = findAccountRecordIndex(records, state.currentAccountRecordId);
   if (currentIndex < 0) {
+    if (updates.status === 'success') {
+      return await createOrReuseCurrentAccountRecord({
+        email: state.email,
+        password: state.password,
+        emailSource: state.emailSource,
+        mailProvider: state.mailProvider,
+        status: updates.status,
+        statusDetail: updates.statusDetail,
+      });
+    }
     return null;
   }
 
@@ -701,9 +719,13 @@ async function updateCurrentAccountRecord(updates = {}) {
     : patchAccountRecord(records[currentIndex], updates);
   const nextRecords = records.slice();
   nextRecords[currentIndex] = nextRecord;
-  const normalizedRecords = await setPersistentAccountRecords(nextRecords);
+  const normalizedRecords = await setPersistentAccountRecords(nextRecords, { successOnly });
+  const nextCurrentAccountRecordId = normalizedRecords.some((record) => record.id === nextRecord.id)
+    ? nextRecord.id
+    : null;
+  await setState({ currentAccountRecordId: nextCurrentAccountRecordId });
   broadcastDataUpdate({ accountRecords: normalizedRecords });
-  return nextRecord;
+  return nextCurrentAccountRecordId ? nextRecord : null;
 }
 
 async function updateCurrentAccountRecordFromError(errorMessage) {
