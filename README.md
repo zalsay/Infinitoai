@@ -90,12 +90,13 @@
 推荐第一次先这样跑：
 
 1. 在 `VPS` 中填好 OAuth 面板地址
-2. 选择 `Source`
-3. 如果 `Source = 33mail`，先配置对应组的 33mail 域名
-4. 如果 `Source = Duck`，再选择一个 `Mail` 通道用于收验证码
-5. 先手动跑 Step 1 -> Step 4，确认邮箱和验证码链路没问题
-6. 再跑完整 1 -> 9，确认 OAuth 回调能回写
-7. 最后再开启 `Auto`
+2. 如果你的面板会先跳到 `#/login`，把 `CPA Password` 一起填好
+3. 选择 `Source`
+4. 如果 `Source = 33mail`，先配置对应组的 33mail 域名
+5. 如果 `Source = Duck`，再选择一个 `Mail` 通道用于收验证码
+6. 先手动跑 Step 1 -> Step 4，确认邮箱和验证码链路没问题
+7. 再跑完整 1 -> 9，确认 OAuth 回调能回写
+8. 最后再开启 `Auto`
 
 ## Side Panel 配置说明
 
@@ -108,6 +109,18 @@ https://your-panel.example.com/management.html#/oauth
 ```
 
 Step 1 和 Step 9 都依赖这个地址。
+
+### `CPA Password`
+
+当 VPS 面板有时会先跳到：
+
+```txt
+https://<your-panel>/management.html#/login
+```
+
+扩展会先在登录页寻找 `Enter the management key` 输入框，自动填入这里保存的 `CPA Password`，登录成功后再跳回配置的 OAuth 页面继续执行 Step 1 / Step 6 / Step 9。
+
+如果你的 VPS 面板不会出现这个登录页，这个输入框可以留空。
 
 ### `Mail`
 
@@ -286,6 +299,7 @@ https://<your-inbucket-host>/m/<mailbox>/
 ### Step 1: Get OAuth Link
 
 - 打开 VPS OAuth 面板
+- 如果先跳到 `#/login`，会先自动填写 `CPA Password`
 - 等待目标卡片出现
 - 读取授权链接
 - 如果页面是 502，会重新打开配置的 OAuth 页面而不是原地卡死
